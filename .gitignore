@@ -1,0 +1,39 @@
+# Build outputs
+bin/
+obj/
+Debug/
+Release/
+
+# Log files
+*.log
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# User-specific files  
+*.rsuser
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+bld/
+[Ll]og/
+[Ll]ogs/
+
+# NuGet Packages
+*.nupkg
+packages/installer_build/
+
+# Ignore build outputs & installers
+/obj/
+/installer_build/
+/thirdparty/*.exe
+*.exe
