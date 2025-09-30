@@ -85,7 +85,7 @@ namespace NowPlayingPopup
         {
             try
             {
-                // TODO: set your manifest url here (use raw.githubusercontent or gh-pages)
+                // URL manifest trên GitHub (raw file trong branch Tien_main)
                 const string MANIFEST_URL = "https://raw.githubusercontent.com/phuongtien/Now_Playing_Popup_clean/refs/heads/Tien_main/releases/manifest.json";
 
                 var um = new UpdateManager();
@@ -97,7 +97,7 @@ namespace NowPlayingPopup
                 if (!UpdateManager.IsNewer(manifest.version, localVer))
                     return;
 
-                // Ask user on UI thread
+                // Hỏi user có muốn update không
                 var msg = $"Có bản cập nhật {manifest.version}.\n\n{manifest.notes}\n\nBạn có muốn tải và cập nhật bây giờ?";
                 var answer = MessageBoxResult.None;
                 Application.Current.Dispatcher.Invoke(() =>
@@ -107,43 +107,68 @@ namespace NowPlayingPopup
 
                 if (answer != MessageBoxResult.Yes) return;
 
-                // Download with small progress window (optional). We'll just download in background for now.
-                var tmp = await um.DownloadFileAsync(manifest.url!);
-                if (tmp == null)
+                // Tải file với progress window
+                var tmpFile = Path.Combine(Path.GetTempPath(), "NowPlayingPopup_Update.exe");
+                var progressWindow = new ProgressWindow();
+                progressWindow.Show();
+
+                using var http = new HttpClient();
+                using var response = await http.GetAsync(manifest.url!, HttpCompletionOption.ResponseHeadersRead);
+                response.EnsureSuccessStatusCode();
+
+                var total = response.Content.Headers.ContentLength ?? -1L;
+                var canReportProgress = total > 0;
+
+                using var stream = await response.Content.ReadAsStreamAsync();
+                using var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None);
+
+                var buffer = new byte[8192];
+                long read = 0;
+                int bytesRead;
+
+                while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                 {
-                    Application.Current.Dispatcher.Invoke(() => MessageBox.Show("Tải bản cập nhật thất bại.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error));
+                    await fs.WriteAsync(buffer, 0, bytesRead);
+                    read += bytesRead;
+
+                    if (canReportProgress)
+                    {
+                        var percent = (int)((read * 100) / total);
+                        progressWindow.SetProgress(percent);
+                    }
+                }
+
+                progressWindow.Close();
+
+                // Verify checksum
+                if (!UpdateManager.VerifySha256(tmpFile, manifest.sha256 ?? ""))
+                {
+                    try { File.Delete(tmpFile); } catch { }
+                    Application.Current.Dispatcher.Invoke(() =>
+                        MessageBox.Show("File tải về không khớp checksum. Cập nhật bị hủy.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error)
+                    );
                     return;
                 }
 
-                // Verify sha
-                if (!UpdateManager.VerifySha256(tmp, manifest.sha256 ?? ""))
-                {
-                    try { File.Delete(tmp); } catch { }
-                    Application.Current.Dispatcher.Invoke(() => MessageBox.Show("File tải về không khớp checksum. Cập nhật bị hủy.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error));
-                    return;
-                }
-
-                // If manifest points to installer (NowPlayingPopupSetup.exe), run it:
+                // Chạy installer (có UI, không silent)
                 var psi = new ProcessStartInfo
                 {
-                    FileName = tmp,
-                    Arguments = "/VERYSILENT", // optional: remove if you want UI
+                    FileName = tmpFile,
                     UseShellExecute = true,
-                    // If installer writes to Program Files, uncomment next line to ask for elevation:
-                    // Verb = "runas"
+                    Verb = "runas" // để hiện UAC nếu cần quyền admin
                 };
 
                 Process.Start(psi);
 
-                // Exit app so installer can replace files
+                // Thoát app để installer thay thế file
                 Application.Current.Dispatcher.Invoke(() => Application.Current.Shutdown());
             }
             catch (Exception ex)
             {
-                // Non-fatal: log to your existing logging helper
                 Debug.WriteLine("Update check failed: " + ex.Message);
             }
         }
+
 
         private async Task InitializeApplicationAsync()
         {
