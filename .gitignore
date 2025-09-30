@@ -21,7 +21,8 @@ Release/
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/
-[Rr]eleases/
+[Rr]eleases/*
+![Rr]eleases/manifest.json
 x64/
 x86/
 bld/
