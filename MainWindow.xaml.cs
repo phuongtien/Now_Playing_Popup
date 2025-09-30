@@ -96,92 +96,197 @@ namespace NowPlayingPopup
                 if (!UpdateManager.IsNewer(manifest.version, localVer))
                     return;
 
-                // hỏi user
+                // Hỏi user TRƯỚC KHI tải
                 var msg = $"Có bản cập nhật {manifest.version}.\n\n{manifest.notes}\n\nBạn có muốn tải và cập nhật bây giờ?";
                 var answer = MessageBoxResult.None;
-                Application.Current.Dispatcher.Invoke(() =>
+
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
                     answer = MessageBox.Show(msg, "Cập nhật", MessageBoxButton.YesNo, MessageBoxImage.Information);
                 });
 
-                if (answer != MessageBoxResult.Yes) return;
+                if (answer != MessageBoxResult.Yes)
+                    return;
 
-                // chuẩn bị tải
-                var tmpFile = Path.Combine(Path.GetTempPath(), "NowPlayingPopup_Update.exe");
-
-                using var http = new HttpClient();
-                using var response = await http.GetAsync(manifest.url!, HttpCompletionOption.ResponseHeadersRead);
-                response.EnsureSuccessStatusCode();
-
-                var total = response.Content.Headers.ContentLength ?? -1L;
-                var canReportProgress = total > 0;
-
-                using var stream = await response.Content.ReadAsStreamAsync();
-                using var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None);
-
-                var buffer = new byte[8192];
-                long read = 0;
-                int bytesRead;
-
-                // hiển thị progress trên taskbar
-                Application.Current.Dispatcher.Invoke(() =>
+                // Tạo và hiện ProgressWindow
+                ProgressWindow? progressWindow = null;
+                await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
-                    if (TaskbarItemInfo == null)
-                        TaskbarItemInfo = new System.Windows.Shell.TaskbarItemInfo();
-                    TaskbarItemInfo.ProgressState = System.Windows.Shell.TaskbarItemProgressState.Normal;
+                    progressWindow = new ProgressWindow();
+                    progressWindow.Owner = Application.Current.MainWindow;
+                    progressWindow.Show();
                 });
 
-                while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
-                {
-                    await fs.WriteAsync(buffer, 0, bytesRead);
-                    read += bytesRead;
+                // Chuẩn bị tải
+                var tmpFile = Path.Combine(Path.GetTempPath(), "NowPlayingPopup_Update.exe");
 
-                    if (canReportProgress)
+                try
+                {
+                    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+                    using var response = await http.GetAsync(manifest.url!, HttpCompletionOption.ResponseHeadersRead);
+                    response.EnsureSuccessStatusCode();
+
+                    var total = response.Content.Headers.ContentLength ?? -1L;
+                    var canReportProgress = total > 0;
+
+                    using var stream = await response.Content.ReadAsStreamAsync();
+                    using var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None);
+
+                    var buffer = new byte[8192];
+                    long totalRead = 0;
+                    int bytesRead;
+
+                    while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                     {
-                        double percent = (double)read / total;
-                        Application.Current.Dispatcher.Invoke(() =>
+                        await fs.WriteAsync(buffer, 0, bytesRead);
+                        totalRead += bytesRead;
+
+                        if (canReportProgress && progressWindow != null)
                         {
-                            TaskbarItemInfo.ProgressValue = percent;
+                            int percent = (int)((double)totalRead / total * 100);
+                            progressWindow.SetProgress(percent);
+                        }
+                    }
+
+                    // Đóng progress window
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        progressWindow?.Close();
+                    });
+
+                    // Verify checksum
+                    if (!string.IsNullOrWhiteSpace(manifest.sha256) &&
+                        !UpdateManager.VerifySha256(tmpFile, manifest.sha256))
+                    {
+                        try { File.Delete(tmpFile); } catch { }
+                        await Application.Current.Dispatcher.InvokeAsync(() =>
+                            MessageBox.Show("File tải về không khớp checksum. Cập nhật bị hủy.",
+                                          "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error)
+                        );
+                        return;
+                    }
+
+                    // Unblock file (quan trọng!)
+                    try
+                    {
+                        // Xóa Zone.Identifier để Windows không block file
+                        var zoneIdentifier = tmpFile + ":Zone.Identifier";
+                        if (File.Exists(zoneIdentifier))
+                            File.Delete(zoneIdentifier);
+                    }
+                    catch { }
+
+                    // Kiểm tra file có tồn tại và có quyền thực thi
+                    if (!File.Exists(tmpFile))
+                    {
+                        await Application.Current.Dispatcher.InvokeAsync(() =>
+                            MessageBox.Show("Không tìm thấy file cài đặt.", "Lỗi",
+                                          MessageBoxButton.OK, MessageBoxImage.Error)
+                        );
+                        return;
+                    }
+
+                    // Chạy installer với nhiều cách fallback
+                    bool installerStarted = false;
+
+                    // Cách 1: Thử chạy với runas
+                    try
+                    {
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = tmpFile,
+                            UseShellExecute = true,
+                            Verb = "runas",
+                            WorkingDirectory = Path.GetTempPath()
+                        };
+
+                        var process = Process.Start(psi);
+                        if (process != null)
+                        {
+                            installerStarted = true;
+                            // Đợi một chút để installer khởi động
+                            await Task.Delay(1000);
+
+                            // Đóng ứng dụng hiện tại
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                                Application.Current.Shutdown()
+                            );
+                        }
+                    }
+                    catch (System.ComponentModel.Win32Exception ex)
+                    {
+                        // User có thể đã cancel UAC prompt
+                        Debug.WriteLine($"Runas failed: {ex.Message}");
+
+                        // Cách 2: Thử chạy bình thường nếu runas thất bại
+                        try
+                        {
+                            var psi2 = new ProcessStartInfo
+                            {
+                                FileName = tmpFile,
+                                UseShellExecute = true,
+                                WorkingDirectory = Path.GetTempPath()
+                            };
+
+                            var process = Process.Start(psi2);
+                            if (process != null)
+                            {
+                                installerStarted = true;
+                                await Task.Delay(1000);
+                                await Application.Current.Dispatcher.InvokeAsync(() =>
+                                    Application.Current.Shutdown()
+                                );
+                            }
+                        }
+                        catch
+                        {
+                            installerStarted = false;
+                        }
+                    }
+
+                    if (!installerStarted)
+                    {
+                        // Nếu không thể tự động chạy, hướng dẫn user chạy thủ công
+                        await Application.Current.Dispatcher.InvokeAsync(() =>
+                        {
+                            var result = MessageBox.Show(
+                                $"Không thể tự động chạy installer.\n\n" +
+                                $"File đã được tải về tại:\n{tmpFile}\n\n" +
+                                $"Bạn có muốn mở thư mục chứa file?",
+                                "Cần chạy thủ công",
+                                MessageBoxButton.YesNo,
+                                MessageBoxImage.Information
+                            );
+
+                            if (result == MessageBoxResult.Yes)
+                            {
+                                Process.Start("explorer.exe", $"/select,\"{tmpFile}\"");
+                            }
                         });
                     }
                 }
-
-                // tải xong → reset taskbar
-                Application.Current.Dispatcher.Invoke(() =>
+                catch (Exception downloadEx)
                 {
-                    TaskbarItemInfo.ProgressState = System.Windows.Shell.TaskbarItemProgressState.None;
-                });
+                    // Đóng progress window nếu có lỗi
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        progressWindow?.Close();
+                    });
 
-                // verify checksum
-                if (!UpdateManager.VerifySha256(tmpFile, manifest.sha256 ?? ""))
-                {
-                    try { File.Delete(tmpFile); } catch { }
-                    Application.Current.Dispatcher.Invoke(() =>
-                        MessageBox.Show("File tải về không khớp checksum. Cập nhật bị hủy.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error)
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                        MessageBox.Show($"Lỗi khi tải file: {downloadEx.Message}",
+                                      "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error)
                     );
-                    return;
+
+                    // Dọn dẹp
+                    try { if (File.Exists(tmpFile)) File.Delete(tmpFile); } catch { }
                 }
-
-                // chạy installer
-                var psi = new ProcessStartInfo
-                {
-                    FileName = tmpFile,
-                    UseShellExecute = true,
-                    Verb = "runas"
-                };
-
-                Process.Start(psi);
-
-                Application.Current.Dispatcher.Invoke(() => Application.Current.Shutdown());
             }
             catch (Exception ex)
             {
                 Debug.WriteLine("Update check failed: " + ex.Message);
             }
         }
-
-
-\
         private async Task InitializeApplicationAsync()
         {
             if (!await InitializeWebView2Async()) return;
