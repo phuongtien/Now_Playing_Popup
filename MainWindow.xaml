@@ -10,8 +10,7 @@
         Background="Transparent"
         Topmost="True"
         ResizeMode="NoResize"
-        ShowInTaskbar="False"
-        WindowChrome.WindowChrome="None">
+        ShowInTaskbar="True">
     <Window.TaskbarItemInfo>
         <TaskbarItemInfo x:Name="MainTaskbarInfo"/>
     </Window.TaskbarItemInfo>

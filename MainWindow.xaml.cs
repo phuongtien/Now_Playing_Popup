@@ -162,7 +162,7 @@ namespace NowPlayingPopup
                     return;
                 }
 
-                // chạy installer (UI, có UAC nếu cần)
+                // chạy installer
                 var psi = new ProcessStartInfo
                 {
                     FileName = tmpFile,
