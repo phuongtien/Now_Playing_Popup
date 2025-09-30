@@ -1,6 +1,6 @@
 # prepare_installer.ps1
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$publishDir = Join-Path $projectRoot "bin\Release\net9.0-windows10.0.17763.0\publish"
+$publishDir = Join-Path $projectRoot "bin\Release\net9.0-windows10.0.17763.0\win-x64\publish"
 $buildDir = Join-Path $projectRoot "installer_build"
 $appDest = Join-Path $buildDir "App"
 $thirdparty = Join-Path $projectRoot "thirdparty"
