@@ -181,7 +181,7 @@ namespace NowPlayingPopup
         }
 
 
-
+\
         private async Task InitializeApplicationAsync()
         {
             if (!await InitializeWebView2Async()) return;
