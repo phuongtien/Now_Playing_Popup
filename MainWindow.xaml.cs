@@ -83,7 +83,7 @@ namespace NowPlayingPopup
             try
             {
                 // TODO: set your manifest url here (use raw.githubusercontent or gh-pages)
-                const string MANIFEST_URL = "https://raw.githubusercontent.com/phuongtien/Now_Playing_Popup/main/releases/manifest.json";
+                const string MANIFEST_URL = "https://raw.githubusercontent.com/phuongtien/Now_Playing_Popup_clean/refs/heads/Tien_main/releases/manifest.json";
 
                 var um = new UpdateManager();
                 var manifest = await um.GetRemoteManifestAsync(MANIFEST_URL);
