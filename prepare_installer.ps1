@@ -1,10 +1,10 @@
-# prepare_installer.ps1
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $publishDir = Join-Path $projectRoot "bin\Release\net9.0-windows10.0.17763.0\win-x64\publish"
 $buildDir = Join-Path $projectRoot "installer_build"
 $appDest = Join-Path $buildDir "App"
 $thirdparty = Join-Path $projectRoot "thirdparty"
 $webviewInstaller = Join-Path $thirdparty "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+$iconFile = Join-Path $projectRoot "icon.ico"  # Đường dẫn icon của bạn
 
 Write-Host "Publish dir:" $publishDir
 Write-Host "Installer build dir:" $buildDir
@@ -16,6 +16,14 @@ New-Item -ItemType Directory -Path $appDest | Out-Null
 # Copy published app files
 Write-Host "Copying published app..."
 Copy-Item -Path (Join-Path $publishDir "*") -Destination $appDest -Recurse -Force
+
+# Copy icon file nếu tồn tại
+if (Test-Path $iconFile) {
+    Write-Host "Copying icon file..."
+    Copy-Item -Path $iconFile -Destination $appDest -Force
+} else {
+    Write-Warning "Icon file not found at $iconFile"
+}
 
 # Copy webview installer
 if (-Not (Test-Path $webviewInstaller)) {
@@ -32,13 +40,19 @@ $issContent = @"
 [Setup]
 AppName=NowPlayingPopup
 AppVersion=1.0
-DefaultDirName={pf}\NowPlayingPopup
+DefaultDirName={autopf}\NowPlayingPopup
 DefaultGroupName=NowPlayingPopup
 OutputBaseFilename=NowPlayingPopupSetup
-Compression=lzma
+Compression=lzma2/ultra64
 SolidCompression=yes
 PrivilegesRequired=admin
 DisableProgramGroupPage=yes
+SetupIconFile=App\icon.ico
+UninstallDisplayIcon={app}\icon.ico
+WizardStyle=modern
+
+[Tasks]
+Name: "desktopicon"; Description: "Tạo shortcut trên Desktop"; GroupDescription: "Tùy chọn thêm:"; Flags: unchecked
 
 [Files]
 ; Copy all app files
@@ -48,11 +62,11 @@ Source: "App\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createall
 Source: "thirdparty\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
-Name: "{group}\NowPlayingPopup"; Filename: "{app}\NowPlayingPopup.exe"
-Name: "{userdesktop}\NowPlayingPopup"; Filename: "{app}\NowPlayingPopup.exe"; Tasks: desktopicon
+Name: "{group}\NowPlayingPopup"; Filename: "{app}\NowPlayingPopup.exe"; IconFilename: "{app}\icon.ico"
+Name: "{autodesktop}\NowPlayingPopup"; Filename: "{app}\NowPlayingPopup.exe"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\NowPlayingPopup.exe"; Description: "Run NowPlayingPopup"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\NowPlayingPopup.exe"; Description: "Chạy NowPlayingPopup ngay bây giờ"; Flags: nowait postinstall skipifsilent
 
 [Code]
 function WebView2Installed(): Boolean;
@@ -87,7 +101,7 @@ begin
   end;
 end;
 
-procedure CurStepChanged(CurStep: Integer);
+procedure CurStepChanged(CurStep: TSetupStep);
 var
   InstallerPath: string;
   ResultCode: Integer;
@@ -102,11 +116,11 @@ begin
         if Exec(InstallerPath, '/silent /install', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then
         begin
           if not WebView2Installed() then
-            MsgBox('WebView2 Runtime installation may have failed. The app may not run properly.', mbError, MB_OK);
+            MsgBox('Cài đặt WebView2 Runtime có thể đã thất bại. Ứng dụng có thể không chạy được.', mbError, MB_OK);
         end else
-          MsgBox('Failed to execute WebView2 installer.', mbError, MB_OK);
+          MsgBox('Không thể chạy trình cài đặt WebView2.', mbError, MB_OK);
       end else
-        MsgBox('WebView2 installer missing in temp folder.', mbError, MB_OK);
+        MsgBox('Không tìm thấy trình cài đặt WebView2 trong thư mục tạm.', mbError, MB_OK);
     end;
   end;
 end;
@@ -114,4 +128,4 @@ end;
 
 $issContent | Out-File -FilePath $issPath -Encoding UTF8
 Write-Host "Created ISS at $issPath"
-Write-Host "Installer build prepared at $buildDir. Open MyWidgetInstaller.iss in Inno Setup and build or run ISCC."
+Write-Host "Installer build prepared at $buildDir. Run build_release.cmd to continue."

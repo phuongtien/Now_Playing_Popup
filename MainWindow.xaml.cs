@@ -112,17 +112,22 @@ namespace NowPlayingPopup
                 ProgressWindow? progressWindow = null;
                 await Application.Current.Dispatcher.InvokeAsync(() =>
                 {
-                    progressWindow = new ProgressWindow();
-                    progressWindow.Owner = Application.Current.MainWindow;
+                    progressWindow = new ProgressWindow
+                    {
+                        Owner = this,
+                        WindowStartupLocation = WindowStartupLocation.CenterOwner
+                    };
                     progressWindow.Show();
                 });
 
-                // Chuẩn bị tải
-                var tmpFile = Path.Combine(Path.GetTempPath(), "NowPlayingPopup_Update.exe");
+                var tmpFile = Path.Combine(Path.GetTempPath(), $"NowPlayingPopup_Update_{Guid.NewGuid():N}.exe");
 
                 try
                 {
-                    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+                    // Download với progress
+                    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+                    http.DefaultRequestHeaders.Add("User-Agent", "NowPlayingPopup-Updater");
+
                     using var response = await http.GetAsync(manifest.url!, HttpCompletionOption.ResponseHeadersRead);
                     response.EnsureSuccessStatusCode();
 
@@ -130,7 +135,7 @@ namespace NowPlayingPopup
                     var canReportProgress = total > 0;
 
                     using var stream = await response.Content.ReadAsStreamAsync();
-                    using var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None);
+                    using var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
 
                     var buffer = new byte[8192];
                     long totalRead = 0;
@@ -144,137 +149,170 @@ namespace NowPlayingPopup
                         if (canReportProgress && progressWindow != null)
                         {
                             int percent = (int)((double)totalRead / total * 100);
-                            progressWindow.SetProgress(percent);
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            {
+                                progressWindow.SetProgress(percent);
+                            });
                         }
                     }
+
+                    await fs.FlushAsync();
 
                     // Đóng progress window
                     await Application.Current.Dispatcher.InvokeAsync(() =>
                     {
                         progressWindow?.Close();
+                        progressWindow = null;
                     });
 
                     // Verify checksum
-                    if (!string.IsNullOrWhiteSpace(manifest.sha256) &&
-                        !UpdateManager.VerifySha256(tmpFile, manifest.sha256))
+                    if (!string.IsNullOrWhiteSpace(manifest.sha256))
                     {
-                        try { File.Delete(tmpFile); } catch { }
-                        await Application.Current.Dispatcher.InvokeAsync(() =>
-                            MessageBox.Show("File tải về không khớp checksum. Cập nhật bị hủy.",
-                                          "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error)
-                        );
-                        return;
+                        var computedHash = UpdateManager.ComputeSha256(tmpFile);
+                        if (!string.Equals(computedHash, manifest.sha256.Trim(), StringComparison.OrdinalIgnoreCase))
+                        {
+                            try { File.Delete(tmpFile); } catch { }
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                                MessageBox.Show("File tải về không khớp checksum. Cập nhật bị hủy.",
+                                              "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error)
+                            );
+                            return;
+                        }
                     }
 
-                    // Unblock file (quan trọng!)
-                    try
-                    {
-                        // Xóa Zone.Identifier để Windows không block file
-                        var zoneIdentifier = tmpFile + ":Zone.Identifier";
-                        if (File.Exists(zoneIdentifier))
-                            File.Delete(zoneIdentifier);
-                    }
-                    catch { }
+                    // QUAN TRỌNG: Unblock file để Windows không chặn
+                    UnblockFile(tmpFile);
 
-                    // Kiểm tra file có tồn tại và có quyền thực thi
-                    if (!File.Exists(tmpFile))
+                    // Verify file có thể thực thi
+                    var fileInfo = new FileInfo(tmpFile);
+                    if (!fileInfo.Exists || fileInfo.Length == 0)
                     {
                         await Application.Current.Dispatcher.InvokeAsync(() =>
-                            MessageBox.Show("Không tìm thấy file cài đặt.", "Lỗi",
+                            MessageBox.Show("File tải về không hợp lệ.", "Lỗi",
                                           MessageBoxButton.OK, MessageBoxImage.Error)
                         );
                         return;
                     }
 
-                    // Chạy installer với nhiều cách fallback
-                    bool installerStarted = false;
+                    // Tạo batch script để chạy installer và đợi nó hoàn thành
+                    var batchFile = Path.Combine(Path.GetTempPath(), $"RunInstaller_{Guid.NewGuid():N}.bat");
+                    var batchContent = $@"@echo off
+timeout /t 2 /nobreak >nul
+""{tmpFile}""
+if exist ""{tmpFile}"" del /f /q ""{tmpFile}""
+if exist ""{batchFile}"" del /f /q ""{batchFile}""
+";
+                    File.WriteAllText(batchFile, batchContent);
 
-                    // Cách 1: Thử chạy với runas
+                    // Chạy batch script
+                    try
+                    {
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = batchFile,
+                            UseShellExecute = true,
+                            CreateNoWindow = true,
+                            WindowStyle = ProcessWindowStyle.Hidden,
+                            WorkingDirectory = Path.GetTempPath()
+                        };
+
+                        var process = Process.Start(psi);
+
+                        if (process != null)
+                        {
+                            // Đợi một chút để batch script khởi động
+                            await Task.Delay(500);
+
+                            // Thông báo và đóng app
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            {
+                                MessageBox.Show(
+                                    "Ứng dụng sẽ đóng để bắt đầu cập nhật.\n\nVui lòng làm theo hướng dẫn của installer.",
+                                    "Đang cập nhật",
+                                    MessageBoxButton.OK,
+                                    MessageBoxImage.Information
+                                );
+                                Application.Current.Shutdown();
+                            });
+                            return;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"Failed to start batch: {ex.Message}");
+                    }
+
+                    // Nếu batch thất bại, thử chạy trực tiếp
                     try
                     {
                         var psi = new ProcessStartInfo
                         {
                             FileName = tmpFile,
                             UseShellExecute = true,
-                            Verb = "runas",
                             WorkingDirectory = Path.GetTempPath()
                         };
 
                         var process = Process.Start(psi);
+
                         if (process != null)
                         {
-                            installerStarted = true;
-                            // Đợi một chút để installer khởi động
                             await Task.Delay(1000);
-
-                            // Đóng ứng dụng hiện tại
                             await Application.Current.Dispatcher.InvokeAsync(() =>
-                                Application.Current.Shutdown()
-                            );
-                        }
-                    }
-                    catch (System.ComponentModel.Win32Exception ex)
-                    {
-                        // User có thể đã cancel UAC prompt
-                        Debug.WriteLine($"Runas failed: {ex.Message}");
-
-                        // Cách 2: Thử chạy bình thường nếu runas thất bại
-                        try
-                        {
-                            var psi2 = new ProcessStartInfo
                             {
-                                FileName = tmpFile,
-                                UseShellExecute = true,
-                                WorkingDirectory = Path.GetTempPath()
-                            };
-
-                            var process = Process.Start(psi2);
-                            if (process != null)
-                            {
-                                installerStarted = true;
-                                await Task.Delay(1000);
-                                await Application.Current.Dispatcher.InvokeAsync(() =>
-                                    Application.Current.Shutdown()
+                                MessageBox.Show(
+                                    "Ứng dụng sẽ đóng để bắt đầu cập nhật.\n\nVui lòng làm theo hướng dẫn của installer.",
+                                    "Đang cập nhật",
+                                    MessageBoxButton.OK,
+                                    MessageBoxImage.Information
                                 );
-                            }
-                        }
-                        catch
-                        {
-                            installerStarted = false;
+                                Application.Current.Shutdown();
+                            });
+                            return;
                         }
                     }
-
-                    if (!installerStarted)
+                    catch (Exception ex)
                     {
-                        // Nếu không thể tự động chạy, hướng dẫn user chạy thủ công
-                        await Application.Current.Dispatcher.InvokeAsync(() =>
-                        {
-                            var result = MessageBox.Show(
-                                $"Không thể tự động chạy installer.\n\n" +
-                                $"File đã được tải về tại:\n{tmpFile}\n\n" +
-                                $"Bạn có muốn mở thư mục chứa file?",
-                                "Cần chạy thủ công",
-                                MessageBoxButton.YesNo,
-                                MessageBoxImage.Information
-                            );
+                        Debug.WriteLine($"Failed to start installer directly: {ex.Message}");
+                    }
 
-                            if (result == MessageBoxResult.Yes)
+                    // Nếu tất cả thất bại, mở thư mục
+                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        var result = MessageBox.Show(
+                            $"Không thể tự động chạy installer.\n\n" +
+                            $"File đã được tải về tại:\n{tmpFile}\n\n" +
+                            $"Vui lòng:\n" +
+                            $"1. Đóng ứng dụng này\n" +
+                            $"2. Chạy file installer thủ công\n\n" +
+                            $"Bạn có muốn mở thư mục chứa file?",
+                            "Cần chạy thủ công",
+                            MessageBoxButton.YesNo,
+                            MessageBoxImage.Warning
+                        );
+
+                        if (result == MessageBoxResult.Yes)
+                        {
+                            try
                             {
                                 Process.Start("explorer.exe", $"/select,\"{tmpFile}\"");
                             }
-                        });
-                    }
+                            catch { }
+                        }
+                    });
                 }
                 catch (Exception downloadEx)
                 {
                     // Đóng progress window nếu có lỗi
-                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    if (progressWindow != null)
                     {
-                        progressWindow?.Close();
-                    });
+                        await Application.Current.Dispatcher.InvokeAsync(() =>
+                        {
+                            progressWindow?.Close();
+                        });
+                    }
 
                     await Application.Current.Dispatcher.InvokeAsync(() =>
-                        MessageBox.Show($"Lỗi khi tải file: {downloadEx.Message}",
+                        MessageBox.Show($"Lỗi khi tải file:\n{downloadEx.Message}",
                                       "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error)
                     );
 
@@ -287,31 +325,42 @@ namespace NowPlayingPopup
                 Debug.WriteLine("Update check failed: " + ex.Message);
             }
         }
-        private async Task InitializeApplicationAsync()
+
+        // Hàm unblock file để Windows không chặn
+        private static void UnblockFile(string filePath)
         {
-            if (!await InitializeWebView2Async()) return;
-            if (!SetupVirtualHostMapping()) return;
-
-            ConfigureWebView2Settings();
-            webView.Source = new Uri($"https://{HOST_NAME}/index.html");
-            ApplySettingsToWindow();
-
-            StartVolumeMonitor();
-            await InitMediaManagerAsync();
-            _youTubeHandler = new YouTubeMediaHandler(webView.CoreWebView2, this);
-            _ = Task.Run(async () =>
+            try
             {
-                while (!_isDisposing)
+                // Xóa Zone.Identifier stream
+                var zoneIdentifier = filePath + ":Zone.Identifier";
+                if (File.Exists(zoneIdentifier))
                 {
-                    await Task.Delay(2000);
-
-                    // Nếu không có session Spotify/ứng dụng khác thì fallback sang YouTube
-                    if (_mediaManager == null || _mediaManager.GetCurrentSession() == null)
-                    {
-                        await _youTubeHandler.PollYouTubeAsync();
-                    }
+                    File.Delete(zoneIdentifier);
                 }
-            });
+
+                // Dùng PowerShell Unblock-File (cách an toàn nhất)
+                try
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = "powershell.exe",
+                        Arguments = $"-NoProfile -Command \"Unblock-File -Path '{filePath}'\"",
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden
+                    };
+                    var process = Process.Start(psi);
+                    process?.WaitForExit(5000);
+                }
+                catch { }
+
+                // Đặt quyền execute
+                File.SetAttributes(filePath, FileAttributes.Normal);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"UnblockFile failed: {ex.Message}");
+            }
         }
 
         public WidgetSettings GetCurrentSettings() => currentSettings;
