@@ -85,7 +85,6 @@ namespace NowPlayingPopup
         {
             try
             {
-                // URL manifest trên GitHub (raw file trong branch Tien_main)
                 const string MANIFEST_URL = "https://raw.githubusercontent.com/phuongtien/Now_Playing_Popup_clean/refs/heads/Tien_main/releases/manifest.json";
 
                 var um = new UpdateManager();
@@ -97,7 +96,7 @@ namespace NowPlayingPopup
                 if (!UpdateManager.IsNewer(manifest.version, localVer))
                     return;
 
-                // Hỏi user có muốn update không
+                // hỏi user
                 var msg = $"Có bản cập nhật {manifest.version}.\n\n{manifest.notes}\n\nBạn có muốn tải và cập nhật bây giờ?";
                 var answer = MessageBoxResult.None;
                 Application.Current.Dispatcher.Invoke(() =>
@@ -107,10 +106,8 @@ namespace NowPlayingPopup
 
                 if (answer != MessageBoxResult.Yes) return;
 
-                // Tải file với progress window
+                // chuẩn bị tải
                 var tmpFile = Path.Combine(Path.GetTempPath(), "NowPlayingPopup_Update.exe");
-                var progressWindow = new ProgressWindow();
-                progressWindow.Show();
 
                 using var http = new HttpClient();
                 using var response = await http.GetAsync(manifest.url!, HttpCompletionOption.ResponseHeadersRead);
@@ -126,6 +123,14 @@ namespace NowPlayingPopup
                 long read = 0;
                 int bytesRead;
 
+                // hiển thị progress trên taskbar
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    if (TaskbarItemInfo == null)
+                        TaskbarItemInfo = new System.Windows.Shell.TaskbarItemInfo();
+                    TaskbarItemInfo.ProgressState = System.Windows.Shell.TaskbarItemProgressState.Normal;
+                });
+
                 while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                 {
                     await fs.WriteAsync(buffer, 0, bytesRead);
@@ -133,14 +138,21 @@ namespace NowPlayingPopup
 
                     if (canReportProgress)
                     {
-                        var percent = (int)((read * 100) / total);
-                        progressWindow.SetProgress(percent);
+                        double percent = (double)read / total;
+                        Application.Current.Dispatcher.Invoke(() =>
+                        {
+                            TaskbarItemInfo.ProgressValue = percent;
+                        });
                     }
                 }
 
-                progressWindow.Close();
+                // tải xong → reset taskbar
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    TaskbarItemInfo.ProgressState = System.Windows.Shell.TaskbarItemProgressState.None;
+                });
 
-                // Verify checksum
+                // verify checksum
                 if (!UpdateManager.VerifySha256(tmpFile, manifest.sha256 ?? ""))
                 {
                     try { File.Delete(tmpFile); } catch { }
@@ -150,17 +162,16 @@ namespace NowPlayingPopup
                     return;
                 }
 
-                // Chạy installer (có UI, không silent)
+                // chạy installer (UI, có UAC nếu cần)
                 var psi = new ProcessStartInfo
                 {
                     FileName = tmpFile,
                     UseShellExecute = true,
-                    Verb = "runas" // để hiện UAC nếu cần quyền admin
+                    Verb = "runas"
                 };
 
                 Process.Start(psi);
 
-                // Thoát app để installer thay thế file
                 Application.Current.Dispatcher.Invoke(() => Application.Current.Shutdown());
             }
             catch (Exception ex)
@@ -168,6 +179,7 @@ namespace NowPlayingPopup
                 Debug.WriteLine("Update check failed: " + ex.Message);
             }
         }
+
 
 
         private async Task InitializeApplicationAsync()
