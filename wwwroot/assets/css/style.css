@@ -1,0 +1,550 @@
+/* Fixed CSS with stronger selectors and proper specificity */
+
+/* CSS Custom Properties for Settings */
+:root {
+  --opacity: 0.95;
+  --corner-radius: 8px;
+  --border-width: 0px;
+  --border-color: #e2e8f0;
+  --shadow-intensity: 0.3;
+  --font-size: 14px;
+  --text-alignment: left;
+  --animation-speed: 1s;
+  --bg-color: transparent;
+
+  /* Default accent colors */
+  --accent-a: rgba(255, 100, 110, 0.95);
+  --accent-b: rgba(255, 70, 70, 0.9);
+  --accent-contrast: rgba(255, 40, 81, 1);
+}
+
+/* CRITICAL: Define animation keyframes FIRST */
+@keyframes vinylSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Base styles */
+body {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: var(--font-size);
+  text-align: var(--text-alignment);
+  opacity: var(--opacity);
+}
+
+/* Main container */
+.main-container {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--corner-radius);
+  border: var(--border-width) solid var(--border-color);
+  background: var(--bg-color);
+  box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Theme-based backgrounds */
+.theme-dark .main-container {
+  background: var(
+    --bg-color,
+    linear-gradient(135deg, #2a1e1c 0%, #1a1a1a 100%)
+  );
+  color: #ffffff;
+}
+
+.theme-light .main-container {
+  background: var(
+    --bg-color,
+    linear-gradient(135deg, #f7fafc 0%, #edf2f7 100%)
+  );
+  color: #2d3748;
+}
+
+/* Appearance-based layouts */
+.appearance-compact .main-container {
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.appearance-boxy .main-container {
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.appearance-gallery .main-container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.appearance-macos .main-container {
+  padding: 10px;
+  background: var(--bg-color, #f2f2f7);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.theme-dark.appearance-macos .main-container {
+  background: var(--bg-color, #282830);
+}
+
+.appearance-shell .main-container {
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.appearance-discord .main-container {
+  padding: 10px;
+  background: var(--bg-color, #36393f);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #dcddde;
+}
+
+/* ===== COVER SECTION - BASE STYLES ===== */
+.cover-section {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  margin-right: 12px;
+}
+
+/* Gallery appearance gets bigger cover */
+.appearance-gallery .cover-section {
+  width: 120px;
+  height: 120px;
+  margin-right: 0;
+  margin-bottom: 12px;
+}
+
+/* Base cover wrap - RESET ALL STYLES */
+#coverWrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 0 !important; /* Reset default */
+  overflow: visible !important; /* Reset default */
+  background: transparent !important;
+}
+
+/* Base cover image - RESET ALL STYLES */
+#cover {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: 0 !important; /* Reset default */
+  animation: none !important; /* Reset default */
+  transform: none !important;
+}
+
+/* Hide ALL pseudo-elements by default */
+#coverWrap::before,
+#coverWrap::after {
+  display: none !important;
+}
+
+/* Hide disc element by default */
+#disc {
+  display: none !important;
+}
+
+/* Remove any vinyl grooves by default */
+.vinyl-grooves {
+  display: none !important;
+}
+
+/* ===== COVER STYLE: PICTURE (DEFAULT) ===== */
+body.cover-picture #coverWrap {
+  border-radius: 8px !important;
+  overflow: hidden !important;
+}
+
+body.cover-picture #cover {
+  border-radius: 8px !important;
+  animation: none !important;
+}
+
+/* ===== COVER STYLE: CIRCLE ===== */
+body.cover-circle #coverWrap {
+  border-radius: 50% !important;
+  overflow: hidden !important;
+}
+
+body.cover-circle #cover {
+  border-radius: 50% !important;
+  animation: none !important;
+}
+
+/* ===== COVER STYLE: SQUARE ===== */
+body.cover-square #coverWrap {
+  border-radius: 0 !important;
+  overflow: hidden !important;
+}
+
+body.cover-square #cover {
+  border-radius: 0 !important;
+  animation: none !important;
+}
+
+/* ===== COVER STYLE: ROUNDED ===== */
+body.cover-rounded #coverWrap {
+  border-radius: 12px !important;
+  overflow: hidden !important;
+}
+
+body.cover-rounded #cover {
+  border-radius: 12px !important;
+  animation: none !important;
+}
+
+/* ===== COVER STYLE: SPINNING DISC - FIXED ===== */
+body.cover-spinning-disc #coverWrap {
+  border-radius: 50% !important;
+  overflow: hidden !important;
+  background: radial-gradient(circle, #333 15%, #111 100%) !important;
+}
+
+body.cover-spinning-disc #cover {
+  border-radius: 50% !important;
+  object-fit: cover !important;
+  transform-origin: center center !important;
+  /* Critical: Allow animation to be applied */
+}
+
+/* Show vinyl grooves ONLY for spinning disc */
+body.cover-spinning-disc .vinyl-grooves {
+  display: block !important;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 50%;
+  transform-origin: center center !important;
+  background: radial-gradient(
+      circle at center,
+      transparent 25%,
+      rgba(0, 0, 0, 0.15) 26%,
+      transparent 27%
+    ),
+    radial-gradient(
+      circle at center,
+      transparent 35%,
+      rgba(0, 0, 0, 0.12) 36%,
+      transparent 37%
+    ),
+    radial-gradient(
+      circle at center,
+      transparent 45%,
+      rgba(0, 0, 0, 0.15) 46%,
+      transparent 47%
+    ),
+    radial-gradient(
+      circle at center,
+      transparent 55%,
+      rgba(0, 0, 0, 0.12) 56%,
+      transparent 57%
+    ),
+    radial-gradient(
+      circle at center,
+      transparent 65%,
+      rgba(0, 0, 0, 0.15) 66%,
+      transparent 67%
+    ),
+    radial-gradient(
+      circle at center,
+      transparent 75%,
+      rgba(0, 0, 0, 0.12) 76%,
+      transparent 77%
+    ),
+    radial-gradient(
+      circle at center,
+      transparent 85%,
+      rgba(0, 0, 0, 0.15) 86%,
+      transparent 87%
+    );
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Show center hole and dot ONLY for spinning disc */
+body.cover-spinning-disc #coverWrap::before {
+  display: block !important;
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  background: radial-gradient(circle, #000 40%, #333 100%);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1),
+    inset 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+body.cover-spinning-disc #coverWrap::after {
+  display: block !important;
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 3px;
+  background: #666;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 11;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+}
+
+/* Gallery size adjustments */
+body.appearance-gallery.cover-spinning-disc #coverWrap::before {
+  width: 24px;
+  height: 24px;
+}
+
+body.appearance-gallery.cover-spinning-disc #coverWrap::after {
+  width: 4px;
+  height: 4px;
+}
+
+/* ===== SPINNING ANIMATIONS - CRITICAL FIX ===== */
+/* Apply spinning ONLY when both spinning-disc AND is-playing */
+body.cover-spinning-disc.is-playing #cover {
+  animation: vinylSpin 2.5s linear infinite !important;
+}
+
+body.cover-spinning-disc.is-playing .vinyl-grooves {
+  animation: vinylSpin 2.5s linear infinite !important;
+}
+
+/* Pause animation when paused - KEEP ANIMATION BUT PAUSE IT */
+body.cover-spinning-disc.is-paused #cover {
+  animation: vinylSpin 2.5s linear infinite !important;
+  animation-play-state: paused !important;
+}
+
+body.cover-spinning-disc.is-paused .vinyl-grooves {
+  animation: vinylSpin 2.5s linear infinite !important;
+  animation-play-state: paused !important;
+}
+
+/* Stop animation completely when not playing and not paused */
+body.cover-spinning-disc:not(.is-playing):not(.is-paused) #cover {
+  animation: none !important;
+}
+
+body.cover-spinning-disc:not(.is-playing):not(.is-paused) .vinyl-grooves {
+  animation: none !important;
+}
+
+/* ===== GLOW EFFECTS ===== */
+.glow-enabled #coverWrap {
+  --cover-glow-color: rgba(255, 100, 110, 0.36);
+  box-shadow: 0 8px 28px -6px var(--cover-glow-color),
+    0 2px 12px -6px rgba(0, 0, 0, 0.28);
+  filter: saturate(1.05) drop-shadow(0 6px 24px var(--cover-glow-color));
+  transition: box-shadow 260ms ease, filter 260ms ease;
+}
+/* quieter glow when paused */
+.glow-enabled.is-paused #coverWrap {
+  --cover-glow-color: rgba(255, 100, 110, 0.22);
+  box-shadow: 0 6px 18px -8px var(--cover-glow-color),
+    0 1px 8px -8px rgba(0, 0, 0, 0.22);
+  filter: saturate(0.98) drop-shadow(0 4px 16px var(--cover-glow-color));
+  transition: box-shadow 260ms ease, filter 260ms ease;
+}
+/* stronger / pulsing while playing (CSS-only subtle pulse) */
+.glow-enabled.is-playing #coverWrap {
+  animation: glowPulse 2400ms ease-in-out infinite;
+}
+@keyframes glowPulse {
+  0% {
+    box-shadow: 0 8px 28px -6px var(--cover-glow-color);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 18px 48px -12px color-mix(in srgb, var(--cover-glow-color) 72%, transparent);
+    transform: scale(1.01);
+  }
+  100% {
+    box-shadow: 0 8px 28px -6px var(--cover-glow-color);
+    transform: scale(1);
+  }
+}
+/* ===== TEXT CONTENT ===== */
+.content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+#titleContainer {
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+#title {
+  font-size: calc(var(--font-size) + 2px);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#artist {
+  font-size: var(--font-size);
+  opacity: 0.8;
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#album {
+  font-size: calc(var(--font-size) - 2px);
+  opacity: 0.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== PROGRESS BAR ===== */
+#progressBar {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 8px 0 4px 0;
+}
+
+.theme-dark #progressBar {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.theme-light #progressBar {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+#progressFill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-a), var(--accent-b));
+  width: 0%;
+  transition: width 0.3s ease;
+}
+
+/* ===== TIME DISPLAY ===== */
+.time-display {
+  display: flex;
+  justify-content: space-between;
+  font-size: calc(var(--font-size) - 4px);
+  opacity: 0.6;
+  margin-top: 4px;
+}
+
+/* ===== VISUALIZER ===== */
+#visualizerCanvas {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* ===== STATES AND EFFECTS ===== */
+
+/* Background blur */
+.blur-enabled .main-container::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  backdrop-filter: blur(10px);
+  z-index: -1;
+}
+
+/* Animations disabled */
+.animations-disabled * {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* Fade effects */
+.fade-in {
+  animation: fadeIn var(--animation-speed) ease-in-out;
+}
+
+.fade-out {
+  animation: fadeOut var(--animation-speed) ease-in-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: var(--opacity);
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: var(--opacity);
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* No playing state */
+.no-playing .main-container {
+  opacity: 0.5;
+}
+
+.no-playing #title {
+  font-style: italic;
+}
+
+/* ===== RESPONSIVE ADJUSTMENTS ===== */
+.appearance-compact .content {
+  font-size: calc(var(--font-size) - 2px);
+}
+
+.appearance-gallery {
+  text-align: center;
+}

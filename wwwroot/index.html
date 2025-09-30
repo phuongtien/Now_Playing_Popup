@@ -1,0 +1,45 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Now Playing Popup</title>
+    <link rel="stylesheet" href="assets/css/style.css" />
+</head>
+<body class="theme-dark appearance-boxy">
+    <div class="main-container">
+        <!-- Album Cover Section -->
+        <div class="cover-section cover-spinning-disc is-playing">
+            <div id="coverWrap">
+                <img id="cover" alt="Album Art" />
+                <!-- <div id="disc"></div> -->
+            </div>
+        </div>
+        
+        <!-- Content Section -->
+        <div class="content">
+            <div id="titleContainer">
+                <div id="title">No playing</div>
+            </div>
+            <div id="artist"></div>
+            <div id="album"></div>
+            
+            <div id="progressBar" class="progress-bar">
+                <div id="progressFill"></div>
+            </div>
+            
+            <div class="time-display">
+                <span id="pos">0:00:00</span>
+                <span id="dur">0:00:00</span>
+            </div>
+        </div>
+        
+        <!-- Visualizer Section - Now on the right -->
+        <!-- <div class="visualizer-section">
+            <canvas id="visualizerCanvas"></canvas>
+        </div> -->
+    </div>
+
+    <script src="assets/js/app.js"></script>
+</body>
+</html>

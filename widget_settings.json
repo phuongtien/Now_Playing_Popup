@@ -1,0 +1,11 @@
+{
+  "playerAppearance": "discord",
+  "theme": "dark",
+  "tintColor": "1",
+  "magicColors": true,
+  "coverGlow": true,
+  "opacity": 0.56,
+  "alwaysOnTop": true,
+  "fontSize": 14,
+  "textAlignment": "left"
+}
