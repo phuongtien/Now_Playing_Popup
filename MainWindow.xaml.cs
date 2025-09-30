@@ -44,11 +44,13 @@ namespace NowPlayingPopup
         private const string HOST_NAME = "appassets";
         private const int VOLUME_POLL_INTERVAL_MS = 2000;
         private const int PUSH_DEBOUNCE_MS = 100;
-        private const bool ACCEPT_ONLY_SPOTIFY = true;
+        private const bool ACCEPT_ONLY_SPOTIFY = false;
 
         private WidgetSettings currentSettings = new WidgetSettings();
         private DateTime _lastPushTime = DateTime.MinValue;
         private string? _lastSentPayloadHash = null;
+
+        private YouTubeMediaHandler? _youTubeHandler;
 
         public MainWindow()
         {
@@ -68,6 +70,7 @@ namespace NowPlayingPopup
             try
             {
                 await InitializeApplicationAsync();
+
                 _httpServer = new SettingsHttpServer(this);
                 _httpServer.Start();
                 _ = Task.Run(async () => await CheckForUpdatesOnStartup());
@@ -153,6 +156,20 @@ namespace NowPlayingPopup
 
             StartVolumeMonitor();
             await InitMediaManagerAsync();
+            _youTubeHandler = new YouTubeMediaHandler(webView.CoreWebView2, this);
+            _ = Task.Run(async () =>
+            {
+                while (!_isDisposing)
+                {
+                    await Task.Delay(2000);
+
+                    // Nếu không có session Spotify/ứng dụng khác thì fallback sang YouTube
+                    if (_mediaManager == null || _mediaManager.GetCurrentSession() == null)
+                    {
+                        await _youTubeHandler.PollYouTubeAsync();
+                    }
+                }
+            });
         }
 
         public WidgetSettings GetCurrentSettings() => currentSettings;
@@ -872,7 +889,7 @@ namespace NowPlayingPopup
             }
         }
 
-        private void SendJsonToWeb(object payload)
+        public void SendJsonToWeb(object payload)
         {
             if (_isDisposing) return;
 
@@ -899,6 +916,36 @@ namespace NowPlayingPopup
                 LogError("SendJsonToWeb error", ex);
             }
         }
+
+        // Overload mới - dùng cho JsonElement (YouTube)
+        public void SendJsonToWeb(JsonElement payload)
+        {
+            if (_isDisposing) return;
+
+            try
+            {
+                var json = payload.GetRawText();
+                if (json == _lastSentPayloadHash) return;
+                _lastSentPayloadHash = json;
+
+                webView?.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        webView?.CoreWebView2?.PostWebMessageAsString(json);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError("Post to webview error", ex);
+                    }
+                }));
+            }
+            catch (Exception ex)
+            {
+                LogError("SendJsonToWeb (JsonElement) error", ex);
+            }
+        }
+
 
         // Event handlers
         private async void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args) => await DebouncedPushCurrentSessionAsync();
@@ -1038,6 +1085,7 @@ namespace NowPlayingPopup
 
         #endregion
     }
+
     public class UpdateManifest
     {
         public string? name { get; set; }
