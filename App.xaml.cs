@@ -16,6 +16,8 @@ namespace NowPlayingPopup
 
         private System.Windows.Forms.NotifyIcon? _notifyIcon;
 
+
+
         protected override void OnStartup(System.Windows.StartupEventArgs e)
         {
             bool createdNew = false;
