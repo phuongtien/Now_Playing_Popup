@@ -13,7 +13,7 @@ namespace NowPlayingPopup
     {
         private Mutex? _singleInstanceMutex;
         private const string MUTEX_NAME = "NowPlayingPopup_SingleInstance_Mutex_v1";
-        
+
         private System.Windows.Forms.NotifyIcon? _notifyIcon;
 
         protected override void OnStartup(System.Windows.StartupEventArgs e)
@@ -31,15 +31,24 @@ namespace NowPlayingPopup
             if (!createdNew)
             {
                 TryActivateExistingInstance();
-                System.Windows.MessageBox.Show("Ứng dụng đang chạy.", "Thông báo", 
+                System.Windows.MessageBox.Show("Ứng dụng đang chạy.", "Thông báo",
                     System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
                 Shutdown();
                 return;
             }
 
             base.OnStartup(e);
+
+            // Tạo system tray sau khi base.OnStartup đã load StartupUri/MainWindow
             SetupSystemTray();
         }
+
+        public void OnStartup(object? sender, System.Windows.StartupEventArgs e)
+        {
+            OnStartup(e);
+        }
+
+
 
         private void SetupSystemTray()
         {
@@ -52,22 +61,22 @@ namespace NowPlayingPopup
 
             // Context menu
             var contextMenu = new System.Windows.Forms.ContextMenuStrip();
-            
-            contextMenu.Items.Add("Mở Settings", null, (s, e) => 
+
+            contextMenu.Items.Add("Mở Settings", null, (s, e) =>
             {
                 var mainWindow = Current.MainWindow as MainWindow;
                 mainWindow?.OpenSettings();
             });
-            
+
             contextMenu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
-            
-            contextMenu.Items.Add("Thoát", null, (s, e) => 
+
+            contextMenu.Items.Add("Thoát", null, (s, e) =>
             {
                 Shutdown();
             });
 
             _notifyIcon.ContextMenuStrip = contextMenu;
-            
+
             // Double click để show/hide window
             _notifyIcon.DoubleClick += (s, e) =>
             {
@@ -87,58 +96,61 @@ namespace NowPlayingPopup
             };
         }
 
-        protected override void OnExit(System.Windows.ExitEventArgs e)
+        private void SetupSystemTray()
         {
-            _notifyIcon?.Dispose();
-            
-            try
+            _notifyIcon = new System.Windows.Forms.NotifyIcon
             {
-                _singleInstanceMutex?.ReleaseMutex();
-                _singleInstanceMutex?.Dispose();
-                _singleInstanceMutex = null;
-            }
-            catch { }
-            
-            base.OnExit(e);
-        }
+                // đảm bảo icon.ico được copy vào output (or use a pack uri)
+                Icon = new System.Drawing.Icon("icon.ico"),
+                Visible = true,
+                Text = "Now Playing Popup"
+            };
 
-        private void TryActivateExistingInstance()
-        {
-            try
+            var contextMenu = new System.Windows.Forms.ContextMenuStrip();
+
+            // Mở Settings — gọi vào UI thread WPF bằng Dispatcher
+            contextMenu.Items.Add("Mở Settings", null, (s, ev) =>
             {
-                var current = Process.GetCurrentProcess();
-                var procs = Process.GetProcessesByName(current.ProcessName);
-
-                foreach (var p in procs)
+                System.Windows.Application.Current.Dispatcher.Invoke(() =>
                 {
-                    if (p.Id == current.Id) continue;
+                    var mainWindow = System.Windows.Application.Current.MainWindow as MainWindow;
+                    mainWindow?.OpenSettings();
+                });
+            });
 
-                    bool samePath = false;
-                    try
+            contextMenu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+
+            // Thoát — cũng chạy trên UI thread để shutdown an toàn
+            contextMenu.Items.Add("Thoát", null, (s, ev) =>
+            {
+                System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                {
+                    System.Windows.Application.Current.Shutdown();
+                });
+            });
+
+            _notifyIcon.ContextMenuStrip = contextMenu;
+
+            // Double click để show/hide window — phải Invoke về UI thread
+            _notifyIcon.DoubleClick += (s, ev) =>
+            {
+                System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                {
+                    var mainWindow = System.Windows.Application.Current.MainWindow;
+                    if (mainWindow != null)
                     {
-                        samePath = string.Equals(
-                            p.MainModule?.FileName ?? "",
-                            current.MainModule?.FileName ?? "",
-                            StringComparison.OrdinalIgnoreCase);
+                        if (mainWindow.Visibility == System.Windows.Visibility.Visible)
+                        {
+                            mainWindow.Hide();
+                        }
+                        else
+                        {
+                            mainWindow.Show();
+                            mainWindow.Activate();
+                        }
                     }
-                    catch { }
-
-                    if (!samePath) continue;
-
-                    IntPtr hWnd = p.MainWindowHandle;
-                    if (hWnd == IntPtr.Zero)
-                    {
-                        hWnd = FindWindowByProcessId(p.Id);
-                    }
-
-                    if (hWnd != IntPtr.Zero)
-                    {
-                        BringWindowToFront(hWnd);
-                        return;
-                    }
-                }
-            }
-            catch { }
+                });
+            };
         }
 
         #region Win32 helpers

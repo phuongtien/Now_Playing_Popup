@@ -14,7 +14,12 @@ using System.Security.Cryptography;
 using System.Threading.Tasks;
 using System.Reflection;
 using Forms = System.Windows.Forms;
-
+using WpfApplication = System.Windows.Application;
+using WpfMessageBox = System.Windows.MessageBox;
+using WpfMessageBoxButton = System.Windows.MessageBoxButton;
+using WpfMessageBoxImage = System.Windows.MessageBoxImage;
+using WpfMessageBoxResult = System.Windows.MessageBoxResult;
+using ThreadingTimer = System.Threading.Timer;
 
 namespace NowPlayingPopup
 {
@@ -33,7 +38,6 @@ namespace NowPlayingPopup
 
         // Volume monitoring
         private IAudioEndpointVolume? _audioEndpointVolume;
-        private System.Threading.Timer? _volumeTimer;
         private int _lastSentVolumePercent = -1;
 
         // Performance optimization
@@ -48,7 +52,7 @@ namespace NowPlayingPopup
         private const bool ACCEPT_ONLY_SPOTIFY = false;
 
         private WidgetSettings currentSettings = new WidgetSettings();
-        private DateTime _lastPushTime = DateTime.MinValue;
+        private ThreadingTimer? _volumeTimer;
         private string? _lastSentPayloadHash = null;
 
         private YouTubeMediaHandler? _youTubeHandler;
@@ -1421,129 +1425,146 @@ exit /b 0
         #region COM Interfaces
 
         [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
-    private class MMDeviceEnumeratorComObject { }
+        private class MMDeviceEnumeratorComObject { }
 
-    private enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
-    private enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }
+        private enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
+        private enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }
 
-    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IMMDeviceEnumerator
-    {
-        int NotImpl1();
-        int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice ppDevice);
-    }
-
-    [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IMMDevice
-    {
-        int Activate([In] ref Guid iid, int dwClsCtx, IntPtr pActivationParams,
-                    [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
-    }
-
-    [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioEndpointVolume
-    {
-        int RegisterControlChangeNotify(IntPtr pNotify);
-        int UnregisterControlChangeNotify(IntPtr pNotify);
-        int GetChannelCount(out uint pnChannelCount);
-        int SetMasterVolumeLevel(float fLevelDB, Guid pguidEventContext);
-        int SetMasterVolumeLevelScalar(float fLevel, Guid pguidEventContext);
-        int GetMasterVolumeLevel(out float pfLevelDB);
-        int GetMasterVolumeLevelScalar(out float pfLevel);
-    }
-
-    #endregion
-}
-
-public class UpdateManifest
-{
-    public string? name { get; set; }
-    public string? version { get; set; }
-    public string? notes { get; set; }
-    public string? url { get; set; }
-    public string? sha256 { get; set; }
-    public string? publishedAt { get; set; }
-}
-
-public class UpdateManager
-{
-    private readonly HttpClient _http;
-    public UpdateManager()
-    {
-        _http = new HttpClient() { Timeout = TimeSpan.FromSeconds(30) };
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("NowPlayingPopup-Updater/1.0");
-    }
-
-    public async Task<UpdateManifest?> GetRemoteManifestAsync(string manifestUrl)
-    {
-        try
+        [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IMMDeviceEnumerator
         {
-            var s = await _http.GetStringAsync(manifestUrl);
-            return JsonSerializer.Deserialize<UpdateManifest>(s, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            int NotImpl1();
+            int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice ppDevice);
         }
-        catch
+
+        [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IMMDevice
         {
-            return null;
+            int Activate([In] ref Guid iid, int dwClsCtx, IntPtr pActivationParams,
+                        [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
         }
-    }
 
-    public static Version? GetLocalVersion()
-    {
-        try
+        [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IAudioEndpointVolume
         {
-            return Assembly.GetEntryAssembly()?.GetName().Version;
+            int RegisterControlChangeNotify(IntPtr pNotify);
+            int UnregisterControlChangeNotify(IntPtr pNotify);
+            int GetChannelCount(out uint pnChannelCount);
+            int SetMasterVolumeLevel(float fLevelDB, Guid pguidEventContext);
+            int SetMasterVolumeLevelScalar(float fLevel, Guid pguidEventContext);
+            int GetMasterVolumeLevel(out float pfLevelDB);
+            int GetMasterVolumeLevelScalar(out float pfLevel);
         }
-        catch { return null; }
+
+        #endregion
     }
 
-    public static bool IsNewer(string remoteVersion, Version? local)
+    public class UpdateManifest
     {
-        if (local == null) return true;
-        if (!Version.TryParse(remoteVersion, out var rv)) return false;
-        return rv > local;
+        public string? name { get; set; }
+        public string? version { get; set; }
+        public string? notes { get; set; }
+        public string? url { get; set; }
+        public string? sha256 { get; set; }
+        public string? publishedAt { get; set; }
     }
 
-    public async Task<string?> DownloadFileAsync(string url, IProgress<double>? progress = null, CancellationToken ct = default)
+    public class UpdateManager
     {
-        var tmp = Path.Combine(Path.GetTempPath(), Path.GetFileName(new Uri(url).LocalPath));
-        try
+        private readonly HttpClient _http;
+        public UpdateManager()
         {
-            using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            resp.EnsureSuccessStatusCode();
-            var total = resp.Content.Headers.ContentLength ?? -1L;
-            using var stream = await resp.Content.ReadAsStreamAsync(ct);
-            using var fs = File.Create(tmp);
-            var buffer = new byte[81920];
-            long read = 0;
-            int r;
-            while ((r = await stream.ReadAsync(buffer, ct)) > 0)
+            _http = new HttpClient() { Timeout = TimeSpan.FromSeconds(30) };
+            _http.DefaultRequestHeaders.UserAgent.ParseAdd("NowPlayingPopup-Updater/1.0");
+        }
+
+        public async Task<UpdateManifest?> GetRemoteManifestAsync(string manifestUrl)
+        {
+            try
             {
-                await fs.WriteAsync(buffer.AsMemory(0, r), ct);
-                read += r;
-                if (total > 0 && progress != null) progress.Report((double)read / total * 100.0);
+                var s = await _http.GetStringAsync(manifestUrl);
+                return JsonSerializer.Deserialize<UpdateManifest>(s, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             }
-            return tmp;
+            catch
+            {
+                return null;
+            }
         }
-        catch
+
+        public static Version? GetLocalVersion()
         {
-            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-            return null;
+            try
+            {
+                return Assembly.GetEntryAssembly()?.GetName().Version;
+            }
+            catch { return null; }
+        }
+
+        public static bool IsNewer(string remoteVersion, Version? local)
+        {
+            if (local == null) return true;
+            if (!Version.TryParse(remoteVersion, out var rv)) return false;
+            return rv > local;
+        }
+
+        public async Task<string?> DownloadFileAsync(string url, IProgress<double>? progress = null, CancellationToken ct = default)
+        {
+            var tmp = Path.Combine(Path.GetTempPath(), Path.GetFileName(new Uri(url).LocalPath));
+            try
+            {
+                using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+                resp.EnsureSuccessStatusCode();
+                var total = resp.Content.Headers.ContentLength ?? -1L;
+                using var stream = await resp.Content.ReadAsStreamAsync(ct);
+                using var fs = File.Create(tmp);
+                var buffer = new byte[81920];
+                long read = 0;
+                int r;
+                while ((r = await stream.ReadAsync(buffer, ct)) > 0)
+                {
+                    await fs.WriteAsync(buffer.AsMemory(0, r), ct);
+                    read += r;
+                    if (total > 0 && progress != null) progress.Report((double)read / total * 100.0);
+                }
+                return tmp;
+            }
+            catch
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                return null;
+            }
+        }
+
+        public static string ComputeSha256(string filePath)
+        {
+            using var sha = SHA256.Create();
+            using var fs = File.OpenRead(filePath);
+            var hash = sha.ComputeHash(fs);
+            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+        }
+
+        public static bool VerifySha256(string filePath, string expectedHash)
+        {
+            if (string.IsNullOrWhiteSpace(expectedHash)) return true;
+            var got = ComputeSha256(filePath);
+            return string.Equals(got, expectedHash.Trim().ToLowerInvariant(), StringComparison.OrdinalIgnoreCase);
+        }
+        public void OpenSettings()
+        {
+            try
+            {
+                var port = _httpServer?.Port ?? 5000;
+                var url = $"http://localhost:{port}/settings.html";
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = url,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                LogError("OpenSettings error", ex);
+            }
         }
     }
-
-    public static string ComputeSha256(string filePath)
-    {
-        using var sha = SHA256.Create();
-        using var fs = File.OpenRead(filePath);
-        var hash = sha.ComputeHash(fs);
-        return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
-    }
-
-    public static bool VerifySha256(string filePath, string expectedHash)
-    {
-        if (string.IsNullOrWhiteSpace(expectedHash)) return true;
-        var got = ComputeSha256(filePath);
-        return string.Equals(got, expectedHash.Trim().ToLowerInvariant(), StringComparison.OrdinalIgnoreCase);
-    }
-}
 }
