@@ -540,7 +540,6 @@ exit /b 0
             }
             catch { }
         }
-    }
 
         public WidgetSettings GetCurrentSettings() => currentSettings;
 
