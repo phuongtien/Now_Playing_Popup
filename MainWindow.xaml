@@ -11,11 +11,13 @@
         Topmost="True"
         ResizeMode="NoResize"
         ShowInTaskbar="False">
+    
     <Border x:Name="MainBorder"
             Background="#CC2A1E1C"
             CornerRadius="8"
             BorderThickness="0"
             Margin="4">
+
         <wv2:WebView2 x:Name="webView"
                       Margin="0"
                       DefaultBackgroundColor="Transparent"/>

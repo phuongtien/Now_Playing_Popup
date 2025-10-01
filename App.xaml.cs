@@ -1,18 +1,22 @@
-﻿using System;
+﻿// App.xaml.cs - Fixed with System Tray
+using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
-using System.Windows;
+using WpfApp = System.Windows.Application;
+using WpfWindow = System.Windows.Window;
 
 namespace NowPlayingPopup
 {
-    public partial class App : Application
+    public partial class App : WpfApp
     {
         private Mutex? _singleInstanceMutex;
         private const string MUTEX_NAME = "NowPlayingPopup_SingleInstance_Mutex_v1";
+        
+        private System.Windows.Forms.NotifyIcon? _notifyIcon;
 
-        protected override void OnStartup(StartupEventArgs e)
+        protected override void OnStartup(System.Windows.StartupEventArgs e)
         {
             bool createdNew = false;
             try
@@ -26,22 +30,67 @@ namespace NowPlayingPopup
 
             if (!createdNew)
             {
-                // Đã có instance khác -> cố gắng đưa nó lên trước rồi exit
                 TryActivateExistingInstance();
-
-                // Hiện thông báo (nếu bạn không muốn thông báo, comment dòng dưới)
-                MessageBox.Show("Ứng dụng đang chạy.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Information);
-
-                // Kết thúc instance mới
+                System.Windows.MessageBox.Show("Ứng dụng đang chạy.", "Thông báo", 
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
                 Shutdown();
                 return;
             }
 
             base.OnStartup(e);
+            SetupSystemTray();
         }
 
-        protected override void OnExit(ExitEventArgs e)
+        private void SetupSystemTray()
         {
+            _notifyIcon = new System.Windows.Forms.NotifyIcon
+            {
+                Icon = new System.Drawing.Icon("icon.ico"),
+                Visible = true,
+                Text = "Now Playing Popup"
+            };
+
+            // Context menu
+            var contextMenu = new System.Windows.Forms.ContextMenuStrip();
+            
+            contextMenu.Items.Add("Mở Settings", null, (s, e) => 
+            {
+                var mainWindow = Current.MainWindow as MainWindow;
+                mainWindow?.OpenSettings();
+            });
+            
+            contextMenu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+            
+            contextMenu.Items.Add("Thoát", null, (s, e) => 
+            {
+                Shutdown();
+            });
+
+            _notifyIcon.ContextMenuStrip = contextMenu;
+            
+            // Double click để show/hide window
+            _notifyIcon.DoubleClick += (s, e) =>
+            {
+                var mainWindow = Current.MainWindow;
+                if (mainWindow != null)
+                {
+                    if (mainWindow.Visibility == System.Windows.Visibility.Visible)
+                    {
+                        mainWindow.Hide();
+                    }
+                    else
+                    {
+                        mainWindow.Show();
+                        mainWindow.Activate();
+                    }
+                }
+            };
+        }
+
+        protected override void OnExit(System.Windows.ExitEventArgs e)
+        {
+            _notifyIcon?.Dispose();
+            
             try
             {
                 _singleInstanceMutex?.ReleaseMutex();
@@ -49,6 +98,7 @@ namespace NowPlayingPopup
                 _singleInstanceMutex = null;
             }
             catch { }
+            
             base.OnExit(e);
         }
 
@@ -71,10 +121,7 @@ namespace NowPlayingPopup
                             current.MainModule?.FileName ?? "",
                             StringComparison.OrdinalIgnoreCase);
                     }
-                    catch
-                    {
-                        // có thể không truy cập được MainModule -> bỏ qua
-                    }
+                    catch { }
 
                     if (!samePath) continue;
 
@@ -91,10 +138,7 @@ namespace NowPlayingPopup
                     }
                 }
             }
-            catch
-            {
-                // ignore
-            }
+            catch { }
         }
 
         #region Win32 helpers
@@ -126,10 +170,7 @@ namespace NowPlayingPopup
         {
             try
             {
-                // Nếu bị minimize, restore
                 ShowWindow(hWnd, SW_RESTORE);
-
-                // Thủ thuật thread attach để đảm bảo SetForegroundWindow có hiệu lực
                 IntPtr fore = GetForegroundWindow();
                 uint foreThread = GetWindowThreadProcessId(fore, out _);
                 uint appThread = GetCurrentThreadId();
@@ -147,15 +188,8 @@ namespace NowPlayingPopup
                     BringWindowToTop(hWnd);
                 }
             }
-            catch
-            {
-                // ignore
-            }
+            catch { }
         }
-
-        #endregion
-
-        #region EnumWindows helper to find top-level window by process id
 
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -178,7 +212,7 @@ namespace NowPlayingPopup
                 if (windowPid == (uint)pid)
                 {
                     found = hWnd;
-                    return false; // dừng enumerate
+                    return false;
                 }
                 return true;
             }, IntPtr.Zero);
