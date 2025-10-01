@@ -62,7 +62,8 @@ namespace NowPlayingPopup
             }
         }
 
-        private void OnWebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
+        private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+
         {
             // Nếu muốn, có thể xử lý tương tác từ JS YouTube ở đây
         }

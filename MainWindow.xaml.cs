@@ -1,4 +1,5 @@
-﻿using System;
+﻿// MainWindow.xaml.cs - patched for ambiguous types, moved OpenSettings, _lastPushTime, Timer fixes
+using System;
 using System.Text.Json;
 using System.Windows.Media;
 using System.Windows;
@@ -20,6 +21,9 @@ using WpfMessageBoxButton = System.Windows.MessageBoxButton;
 using WpfMessageBoxImage = System.Windows.MessageBoxImage;
 using WpfMessageBoxResult = System.Windows.MessageBoxResult;
 using ThreadingTimer = System.Threading.Timer;
+using Icon = System.Drawing.Icon;
+using System.Linq;
+using System.Threading;
 
 namespace NowPlayingPopup
 {
@@ -58,6 +62,9 @@ namespace NowPlayingPopup
         private YouTubeMediaHandler? _youTubeHandler;
 
         private Forms.NotifyIcon? _notifyIcon;
+
+        // Debounce helper
+        private DateTime _lastPushTime = DateTime.MinValue;
 
         public MainWindow()
         {
@@ -106,19 +113,19 @@ namespace NowPlayingPopup
 
                 // Hỏi user TRƯỚC KHI tải
                 var msg = $"Có bản cập nhật {manifest.version}.\n\n{manifest.notes}\n\nBạn có muốn tải và cập nhật bây giờ?";
-                var answer = MessageBoxResult.None;
+                var answer = WpfMessageBoxResult.None;
 
-                await Application.Current.Dispatcher.InvokeAsync(() =>
+                await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
                 {
-                    answer = MessageBox.Show(msg, "Cập nhật", MessageBoxButton.YesNo, MessageBoxImage.Information);
+                    answer = WpfMessageBox.Show(msg, "Cập nhật", WpfMessageBoxButton.YesNo, WpfMessageBoxImage.Information);
                 });
 
-                if (answer != MessageBoxResult.Yes)
+                if (answer != WpfMessageBoxResult.Yes)
                     return;
 
                 // Tạo và hiện ProgressWindow
                 ProgressWindow? progressWindow = null;
-                await Application.Current.Dispatcher.InvokeAsync(() =>
+                await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
                 {
                     progressWindow = new ProgressWindow
                     {
@@ -158,7 +165,7 @@ namespace NowPlayingPopup
                         if (canReportProgress && progressWindow != null)
                         {
                             int percent = (int)((double)totalRead / total * 100);
-                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
                             {
                                 progressWindow.SetProgress(percent);
                             });
@@ -168,7 +175,7 @@ namespace NowPlayingPopup
                     await fs.FlushAsync();
 
                     // Đóng progress window
-                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
                     {
                         progressWindow?.Close();
                         progressWindow = null;
@@ -181,9 +188,9 @@ namespace NowPlayingPopup
                         if (!string.Equals(computedHash, manifest.sha256.Trim(), StringComparison.OrdinalIgnoreCase))
                         {
                             try { File.Delete(tmpFile); } catch { }
-                            await Application.Current.Dispatcher.InvokeAsync(() =>
-                                MessageBox.Show("File tải về không khớp checksum. Cập nhật bị hủy.",
-                                              "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error)
+                            await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                                WpfMessageBox.Show("File tải về không khớp checksum. Cập nhật bị hủy.",
+                                              "Lỗi", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error)
                             );
                             return;
                         }
@@ -196,9 +203,9 @@ namespace NowPlayingPopup
                     var fileInfo = new FileInfo(tmpFile);
                     if (!fileInfo.Exists || fileInfo.Length == 0)
                     {
-                        await Application.Current.Dispatcher.InvokeAsync(() =>
-                            MessageBox.Show("File tải về không hợp lệ.", "Lỗi",
-                                          MessageBoxButton.OK, MessageBoxImage.Error)
+                        await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                            WpfMessageBox.Show("File tải về không hợp lệ.", "Lỗi",
+                                          WpfMessageBoxButton.OK, WpfMessageBoxImage.Error)
                         );
                         return;
                     }
@@ -266,12 +273,12 @@ exit /b 0
                             batchStarted = true;
 
                             // Force cleanup để app đóng nhanh hơn
-                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
                             {
                                 ForceCleanupBeforeUpdate();
 
                                 // Shutdown ngay
-                                Application.Current.Shutdown();
+                                WpfApplication.Current.Shutdown();
 
                                 // Force exit sau 2 giây nếu vẫn chưa tắt
                                 _ = Task.Run(async () =>
@@ -291,13 +298,13 @@ exit /b 0
                     // Nếu batch không chạy được, thử cách khác
                     if (!batchStarted)
                     {
-                        await Application.Current.Dispatcher.InvokeAsync(() =>
+                        await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
                         {
-                            MessageBox.Show(
+                            WpfMessageBox.Show(
                                 "Ứng dụng sẽ đóng.\n\nVui lòng chạy file installer thủ công tại:\n" + tmpFile,
                                 "Cập nhật",
-                                MessageBoxButton.OK,
-                                MessageBoxImage.Information
+                                WpfMessageBoxButton.OK,
+                                WpfMessageBoxImage.Information
                             );
 
                             // Mở Explorer
@@ -307,7 +314,7 @@ exit /b 0
                             }
                             catch { }
 
-                            Application.Current.Shutdown();
+                            WpfApplication.Current.Shutdown();
                         });
                         return;
                     }
@@ -318,15 +325,15 @@ exit /b 0
                     // Đóng progress window nếu có lỗi
                     if (progressWindow != null)
                     {
-                        await Application.Current.Dispatcher.InvokeAsync(() =>
+                        await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
                         {
                             progressWindow?.Close();
                         });
                     }
 
-                    await Application.Current.Dispatcher.InvokeAsync(() =>
-                        MessageBox.Show($"Lỗi khi tải file:\n{downloadEx.Message}",
-                                      "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error)
+                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                        WpfMessageBox.Show($"Lỗi khi tải file:\n{downloadEx.Message}",
+                                      "Lỗi", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error)
                     );
 
                     // Dọn dẹp
@@ -446,7 +453,7 @@ exit /b 0
                 // Thử load icon từ resource (Resources/app.ico)
                 try
                 {
-                    var res = Application.GetResourceStream(new Uri("pack://application:,,,/Resources/app.ico"));
+                    var res = WpfApplication.GetResourceStream(new Uri("pack://application:,,,/Resources/app.ico"));
                     if (res != null)
                     {
                         using var s = res.Stream;
@@ -479,7 +486,7 @@ exit /b 0
                     // dọn dẹp và thoát
                     _notifyIcon.Visible = false;
                     _notifyIcon.Dispose();
-                    Application.Current.Shutdown();
+                    WpfApplication.Current.Shutdown();
                 };
                 menu.Items.Add(exitItem);
 
@@ -496,7 +503,7 @@ exit /b 0
 
         private void ShowMainWindowFromTray()
         {
-            Application.Current.Dispatcher.Invoke(() =>
+            WpfApplication.Current.Dispatcher.Invoke(() =>
             {
                 try
                 {
@@ -511,7 +518,7 @@ exit /b 0
                     _ = Task.Run(async () =>
                     {
                         await Task.Delay(1000);
-                        Application.Current.Dispatcher.Invoke(() => this.ShowInTaskbar = false);
+                        WpfApplication.Current.Dispatcher.Invoke(() => this.ShowInTaskbar = false);
                     });
                 }
                 catch (Exception ex)
@@ -557,6 +564,25 @@ exit /b 0
             });
         }
 
+        // === NEW: OpenSettings moved here so it can access _httpServer and LogError ===
+        public void OpenSettings()
+        {
+            try
+            {
+                var port = _httpServer?.Port ?? 5000;
+                var url = $"http://localhost:{port}/settings.html";
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = url,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                LogError("OpenSettings error", ex);
+            }
+        }
+
         private async Task<bool> InitializeWebView2Async()
         {
             try
@@ -589,7 +615,7 @@ exit /b 0
 
             if (!Directory.Exists(wwwrootPath))
             {
-                MessageBox.Show($"wwwroot folder not found at: {wwwrootPath}");
+                WpfMessageBox.Show($"wwwroot folder not found at: {wwwrootPath}");
                 return false;
             }
 
@@ -632,7 +658,7 @@ exit /b 0
 
         private async Task HandleInitializationErrorAsync(Exception ex)
         {
-            MessageBox.Show($"Application initialization failed: {ex.Message}");
+            WpfMessageBox.Show($"Application initialization failed: {ex.Message}");
             await LogErrorToFileAsync("initialization_error.log", ex);
         }
 
@@ -1332,7 +1358,8 @@ exit /b 0
             try
             {
                 if (!InitializeAudioEndpoint()) return;
-                _volumeTimer = new Timer(OnVolumeTimerElapsed, null, 0, VOLUME_POLL_INTERVAL_MS);
+                // use explicit ThreadingTimer to avoid ambiguous Timer
+                _volumeTimer = new ThreadingTimer(OnVolumeTimerElapsed, null, 0, VOLUME_POLL_INTERVAL_MS);
             }
             catch (Exception ex)
             {
@@ -1548,23 +1575,6 @@ exit /b 0
             if (string.IsNullOrWhiteSpace(expectedHash)) return true;
             var got = ComputeSha256(filePath);
             return string.Equals(got, expectedHash.Trim().ToLowerInvariant(), StringComparison.OrdinalIgnoreCase);
-        }
-        public void OpenSettings()
-        {
-            try
-            {
-                var port = _httpServer?.Port ?? 5000;
-                var url = $"http://localhost:{port}/settings.html";
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = url,
-                    UseShellExecute = true
-                });
-            }
-            catch (Exception ex)
-            {
-                LogError("OpenSettings error", ex);
-            }
         }
     }
 }

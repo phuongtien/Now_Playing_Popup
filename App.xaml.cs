@@ -43,59 +43,14 @@ namespace NowPlayingPopup
             SetupSystemTray();
         }
 
+        // Nếu App.xaml có Startup="OnStartup" — giữ overload này để XAML binding không lỗi.
         public void OnStartup(object? sender, System.Windows.StartupEventArgs e)
         {
+            // forward tới override
             OnStartup(e);
         }
 
-
-
-        private void SetupSystemTray()
-        {
-            _notifyIcon = new System.Windows.Forms.NotifyIcon
-            {
-                Icon = new System.Drawing.Icon("icon.ico"),
-                Visible = true,
-                Text = "Now Playing Popup"
-            };
-
-            // Context menu
-            var contextMenu = new System.Windows.Forms.ContextMenuStrip();
-
-            contextMenu.Items.Add("Mở Settings", null, (s, e) =>
-            {
-                var mainWindow = Current.MainWindow as MainWindow;
-                mainWindow?.OpenSettings();
-            });
-
-            contextMenu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
-
-            contextMenu.Items.Add("Thoát", null, (s, e) =>
-            {
-                Shutdown();
-            });
-
-            _notifyIcon.ContextMenuStrip = contextMenu;
-
-            // Double click để show/hide window
-            _notifyIcon.DoubleClick += (s, e) =>
-            {
-                var mainWindow = Current.MainWindow;
-                if (mainWindow != null)
-                {
-                    if (mainWindow.Visibility == System.Windows.Visibility.Visible)
-                    {
-                        mainWindow.Hide();
-                    }
-                    else
-                    {
-                        mainWindow.Show();
-                        mainWindow.Activate();
-                    }
-                }
-            };
-        }
-
+        // --- CHỈ CÓ 1 SetupSystemTray() ---
         private void SetupSystemTray()
         {
             _notifyIcon = new System.Windows.Forms.NotifyIcon
@@ -151,6 +106,68 @@ namespace NowPlayingPopup
                     }
                 });
             };
+        }
+
+        protected override void OnExit(System.Windows.ExitEventArgs e)
+        {
+            try
+            {
+                _notifyIcon?.Dispose();
+                _notifyIcon = null;
+            }
+            catch { }
+
+            try
+            {
+                if (_singleInstanceMutex != null)
+                {
+                    _singleInstanceMutex.ReleaseMutex();
+                    _singleInstanceMutex.Dispose();
+                    _singleInstanceMutex = null;
+                }
+            }
+            catch { }
+
+            base.OnExit(e);
+        }
+
+        private void TryActivateExistingInstance()
+        {
+            try
+            {
+                var current = Process.GetCurrentProcess();
+                var procs = Process.GetProcessesByName(current.ProcessName);
+
+                foreach (var p in procs)
+                {
+                    if (p.Id == current.Id) continue;
+
+                    bool samePath = false;
+                    try
+                    {
+                        samePath = string.Equals(
+                            p.MainModule?.FileName ?? "",
+                            current.MainModule?.FileName ?? "",
+                            StringComparison.OrdinalIgnoreCase);
+                    }
+                    catch { }
+
+                    if (!samePath) continue;
+
+                    IntPtr hWnd = p.MainWindowHandle;
+                    if (hWnd == IntPtr.Zero)
+                    {
+                        hWnd = FindWindowByProcessId(p.Id);
+                    }
+
+                    if (hWnd != IntPtr.Zero)
+                    {
+                        BringWindowToFront(hWnd);
+                        return;
+                    }
+                }
+            }
+            catch { }
         }
 
         #region Win32 helpers
