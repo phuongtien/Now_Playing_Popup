@@ -624,7 +624,7 @@ exit /b 0
         {
             try
             {
-                int port = 5000; // nếu server của bạn dùng port khác, đổi ở đây hoặc implement Port property trên SettingsHttpServer.
+                int port = 5000; 
                 var url = $"http://localhost:{port}/settings.html";
                 Process.Start(new ProcessStartInfo
                 {
