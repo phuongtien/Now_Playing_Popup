@@ -10,11 +10,7 @@
         Background="Transparent"
         Topmost="True"
         ResizeMode="NoResize"
-        ShowInTaskbar="True">
-    <Window.TaskbarItemInfo>
-        <TaskbarItemInfo x:Name="MainTaskbarInfo"/>
-    </Window.TaskbarItemInfo>
-
+        >
     <Border x:Name="MainBorder"
             Background="#CC2A1E1C"
             CornerRadius="8"

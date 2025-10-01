@@ -1344,7 +1344,7 @@ exit /b 0
         #endregion
     }
 
-     public class UpdateManifest
+    public class UpdateManifest
     {
         public string? name { get; set; }
         public string? version { get; set; }
@@ -1353,7 +1353,7 @@ exit /b 0
         public string? sha256 { get; set; }
         public string? publishedAt { get; set; }
     }
-
+    // Small update manager
     public class UpdateManager
     {
         private readonly HttpClient _http;
