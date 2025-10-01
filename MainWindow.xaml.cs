@@ -1,5 +1,4 @@
-﻿// MainWindow.xaml.cs - patched for ambiguous types, moved OpenSettings, _lastPushTime, Timer fixes
-using System;
+﻿using System;
 using System.Text.Json;
 using System.Windows.Media;
 using System.Windows;
@@ -24,7 +23,6 @@ using ThreadingTimer = System.Threading.Timer;
 using Icon = System.Drawing.Icon;
 using System.Linq;
 using System.Threading;
-
 namespace NowPlayingPopup
 {
     public partial class MainWindow : Window
@@ -449,9 +447,12 @@ exit /b 0
         {
             try
             {
+                // Nếu đã có rồi thì không tạo nữa
+                if (_notifyIcon != null) return;
+
                 _notifyIcon = new Forms.NotifyIcon();
 
-                // Try load app icon from resources first, fallback to exe icon using robust path detection
+                // Load icon (try resource -> exe -> fallback)
                 try
                 {
                     var res = WpfApplication.GetResourceStream(new Uri("pack://application:,,,/Resources/app.ico"));
@@ -462,66 +463,16 @@ exit /b 0
                     }
                     else
                     {
-                        // Robust exe path detection (Process.MainModule may be null on single-file publish)
                         string? exePath = null;
                         try { exePath = Process.GetCurrentProcess().MainModule?.FileName; } catch { exePath = null; }
-
-                        if (string.IsNullOrEmpty(exePath))
-                        {
-                            try
-                            {
-                                var asm = Assembly.GetEntryAssembly();
-                                exePath = asm?.Location;
-                            }
-                            catch { exePath = null; }
-                        }
-
-                        if (string.IsNullOrEmpty(exePath))
-                        {
-                            try
-                            {
-                                var asmName = Assembly.GetEntryAssembly()?.GetName().Name;
-                                if (!string.IsNullOrEmpty(asmName))
-                                    exePath = Path.Combine(AppContext.BaseDirectory, asmName + ".exe");
-                            }
-                            catch { exePath = null; }
-                        }
-
+                        if (string.IsNullOrEmpty(exePath)) exePath = Assembly.GetEntryAssembly()?.Location;
                         if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
-                        {
                             _notifyIcon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
-                        }
-                        else
-                        {
-                            // last resort: create an empty icon to avoid null reference (optional)
-                            try
-                            {
-                                using var bmp = new System.Drawing.Bitmap(16, 16);
-                                using var g = System.Drawing.Graphics.FromImage(bmp);
-                                g.Clear(System.Drawing.Color.Transparent);
-                                _notifyIcon.Icon = System.Drawing.Icon.FromHandle(bmp.GetHicon());
-                            }
-                            catch { /* ignore */ }
-                        }
                     }
                 }
                 catch
                 {
-                    // Fallback safe: try to get exe icon (same robust approach)
-                    try
-                    {
-                        string? exePath = null;
-                        try { exePath = Process.GetCurrentProcess().MainModule?.FileName; } catch { exePath = null; }
-                        if (string.IsNullOrEmpty(exePath))
-                        {
-                            exePath = Assembly.GetEntryAssembly()?.Location;
-                        }
-                        if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
-                        {
-                            _notifyIcon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
-                        }
-                    }
-                    catch { /* give up silently */ }
+                    // ignore icon load failure
                 }
 
                 _notifyIcon.Text = "Now Playing Popup";
@@ -536,26 +487,28 @@ exit /b 0
                 var exitItem = new Forms.ToolStripMenuItem("Exit");
                 exitItem.Click += (s, e) =>
                 {
-                    try
-                    {
-                        _notifyIcon.Visible = false;
-                        _notifyIcon.Dispose();
-                    }
-                    catch { }
+                    try { _notifyIcon.Visible = false; _notifyIcon.Dispose(); } catch { }
                     WpfApplication.Current.Shutdown();
                 };
                 menu.Items.Add(exitItem);
 
                 _notifyIcon.ContextMenuStrip = menu;
 
-                // Double click để mở
-                _notifyIcon.DoubleClick += (s, e) => ShowMainWindowFromTray();
+                // Double click để mở (lưu ý: tránh đăng handler nhiều lần)
+                _notifyIcon.DoubleClick -= NotifyIcon_DoubleClick;
+                _notifyIcon.DoubleClick += NotifyIcon_DoubleClick;
             }
             catch (Exception ex)
             {
                 Debug.WriteLine("SetupTrayIcon failed: " + ex);
             }
         }
+
+        private void NotifyIcon_DoubleClick(object? sender, EventArgs e)
+        {
+            ShowMainWindowFromTray();
+        }
+
 
 
         private void ShowMainWindowFromTray()
@@ -624,13 +577,83 @@ exit /b 0
         {
             try
             {
-                int port = 5000; 
-                var url = $"http://localhost:{port}/settings.html";
-                Process.Start(new ProcessStartInfo
+                // 1) Nếu server có Port public -> open http://localhost:PORT
+                int port = 0;
+                if (_httpServer != null)
                 {
-                    FileName = url,
-                    UseShellExecute = true
-                });
+                    try
+                    {
+                        var pi = _httpServer.GetType().GetProperty("Port", BindingFlags.Public | BindingFlags.Instance);
+                        if (pi != null && pi.GetValue(_httpServer) is int p && p > 0)
+                        {
+                            port = p;
+                        }
+                    }
+                    catch { /* ignore reflection failures */ }
+                }
+
+                if (port > 0)
+                {
+                    var url = $"http://localhost:{port}/settings.html";
+                    Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+                    return;
+                }
+
+                // 2) Nếu không có server: tìm file settings.html trong cây thư mục cài đặt
+                string? found = FindSettingsFile();
+                if (!string.IsNullOrEmpty(found))
+                {
+                    var uri = new Uri(found).AbsoluteUri; // => file:///E:/.../settings.html
+                    Process.Start(new ProcessStartInfo { FileName = uri, UseShellExecute = true });
+                    return;
+                }
+
+                // 3) Fallback: try common localhost port (legacy)
+                Process.Start(new ProcessStartInfo { FileName = "http://localhost:5000/settings.html", UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                LogError("OpenSettings error", ex);
+            }
+        }
+
+        public void OpenSettings()
+        {
+            try
+            {
+                // 1) Nếu server có Port public -> open http://localhost:PORT
+                int port = 0;
+                if (_httpServer != null)
+                {
+                    try
+                    {
+                        var pi = _httpServer.GetType().GetProperty("Port", BindingFlags.Public | BindingFlags.Instance);
+                        if (pi != null && pi.GetValue(_httpServer) is int p && p > 0)
+                        {
+                            port = p;
+                        }
+                    }
+                    catch { /* ignore reflection failures */ }
+                }
+
+                if (port > 0)
+                {
+                    var url = $"http://localhost:{port}/settings.html";
+                    Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+                    return;
+                }
+
+                // 2) Nếu không có server: tìm file settings.html trong cây thư mục cài đặt
+                string? found = FindSettingsFile();
+                if (!string.IsNullOrEmpty(found))
+                {
+                    var uri = new Uri(found).AbsoluteUri; // => file:///E:/.../settings.html
+                    Process.Start(new ProcessStartInfo { FileName = uri, UseShellExecute = true });
+                    return;
+                }
+
+                // 3) Fallback: try common localhost port (legacy)
+                Process.Start(new ProcessStartInfo { FileName = "http://localhost:5000/settings.html", UseShellExecute = true });
             }
             catch (Exception ex)
             {
