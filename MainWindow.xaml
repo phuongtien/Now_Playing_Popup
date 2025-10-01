@@ -10,6 +10,7 @@
         Background="Transparent"
         Topmost="True"
         ResizeMode="NoResize"
+        ShowInTaskbar="False"
         >
     <Border x:Name="MainBorder"
             Background="#CC2A1E1C"
