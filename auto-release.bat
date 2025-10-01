@@ -16,6 +16,12 @@ set SETUP_FILE=NowPlayingPopupSetup.exe
 :: ==========================
 set /p VERSION=Enter new version (e.g. 1.0.3): 
 
+if "%VERSION%"=="" (
+    echo No version entered. Aborting.
+    pause
+    exit /b 1
+)
+
 :: ==========================
 :: 2. Build & Publish dự án .NET
 :: ==========================
@@ -72,15 +78,39 @@ if errorlevel 1 (
 echo Committing manifest.json...
 git add releases\manifest.json
 git commit -m "Update manifest v%VERSION%"
-git push origin %BRANCH%
 if errorlevel 1 (
-    echo Git push failed!
-    pause
-    exit /b 1
+    echo No changes to commit or commit failed.
+) else (
+    git push origin %BRANCH%
+    if errorlevel 1 (
+        echo Git push failed!
+        pause
+        exit /b 1
+    )
 )
 
 :: ==========================
-:: 6.5 Create and push tag for the release (important for correct source archives)
+:: 6.5 Clean any previous remote release/tag (optional but safe)
+:: ==========================
+echo Cleaning previous release/tag if exists...
+:: Delete GitHub release (if exists) -- ignore errors
+gh release delete "v%VERSION%" -R %REPO% -y >nul 2>&1
+
+:: Delete remote tag if exists
+git ls-remote --tags origin v%VERSION% | findstr /R /C:"refs/tags/v%VERSION%" >nul 2>&1
+if %ERRORLEVEL%==0 (
+    echo Remote tag v%VERSION% exists -> deleting it...
+    git push --delete origin "v%VERSION%" >nul 2>&1
+)
+
+:: Delete local tag if exists
+git tag -l "v%VERSION%" | findstr /R /C:"v%VERSION%" >nul 2>&1
+if %ERRORLEVEL%==0 (
+    git tag -d "v%VERSION%" >nul 2>&1
+)
+
+:: ==========================
+:: 7. Create and push annotated tag for the release
 :: ==========================
 echo Tagging commit as v%VERSION%...
 git tag -a "v%VERSION%" -m "Release v%VERSION%"
@@ -97,12 +127,11 @@ if errorlevel 1 (
 )
 
 :: ==========================
-:: 7. GitHub Release + upload
+:: 8. Prepare assets + source zip (from tag)
 :: ==========================
-echo Creating GitHub Release v%VERSION%...
-
+echo Locating setup file...
 set FILEPATH=
-for /f "usebackq tokens=*" %%i in (`dir /b /od %OUTPUT_DIR%\%SETUP_FILE%`) do set FILEPATH=%OUTPUT_DIR%\%%i
+for /f "usebackq tokens=*" %%i in (`dir /b /od "%OUTPUT_DIR%\%SETUP_FILE%"`) do set FILEPATH=%OUTPUT_DIR%\%%i
 
 if not exist "%FILEPATH%" (
     echo ERROR: Could not find setup file in %OUTPUT_DIR%
@@ -110,15 +139,21 @@ if not exist "%FILEPATH%" (
     exit /b 1
 )
 
-:: Optional: create a source zip and upload it as an explicit asset (if you want)
+:: Create a source zip from the tagged commit (reliable)
 set SRCZIP=%OUTPUT_DIR%\NowPlayingPopup-%VERSION%-source.zip
-powershell -Command "Compress-Archive -Path (Get-ChildItem -Path . -Exclude '.git','installer_build','bin','obj','%OUTPUT_DIR%') -DestinationPath '%SRCZIP%' -Force" >nul 2>&1
+if exist "%SRCZIP%" del /q "%SRCZIP%"
+echo Creating source archive from tag v%VERSION%...
+git archive --format=zip --output="%SRCZIP%" "v%VERSION%"
+if errorlevel 1 (
+    echo Failed to create source zip via git archive. Continuing without source zip.
+    if exist "%SRCZIP%" del /q "%SRCZIP%"
+)
 
-:: Delete any previous release/tag if desired (keep or remove as you prefer)
-gh release delete "v%VERSION%" -R %REPO% -y >nul 2>&1
-git tag -d "v%VERSION%" >nul 2>&1 || rem ignore if not exist
+:: ==========================
+:: 9. Create GitHub Release and upload assets
+:: ==========================
+echo Creating GitHub Release v%VERSION%...
 
-:: Create release and upload assets: exe + manifest + optional source zip
 if exist "%SRCZIP%" (
     gh release create "v%VERSION%" "%FILEPATH%" "releases\manifest.json" "%SRCZIP%" ^
         -R %REPO% ^
@@ -129,6 +164,12 @@ if exist "%SRCZIP%" (
         -R %REPO% ^
         --title "NowPlayingPopup v%VERSION%" ^
         --notes "Auto release v%VERSION%: bug fixes and improvements"
+)
+
+if errorlevel 1 (
+    echo gh release create failed!
+    pause
+    exit /b 1
 )
 
 echo ====================================
