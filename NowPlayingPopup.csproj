@@ -31,6 +31,6 @@
     </Content>
   </ItemGroup>
   <ItemGroup>
-    <None Include="NowPlayingPopup_icon.ico" />
+    <None Include="icon.ico" />
   </ItemGroup>
 </Project>
