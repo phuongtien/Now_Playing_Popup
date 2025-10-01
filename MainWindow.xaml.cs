@@ -617,6 +617,7 @@ exit /b 0
             }
         }
 
+
         public void OpenSettings()
         {
             try
@@ -659,6 +660,33 @@ exit /b 0
             {
                 LogError("OpenSettings error", ex);
             }
+        }
+
+        // helper (nếu chưa có)
+        private string? FindSettingsFile()
+        {
+            string[] roots = new[]
+            {
+        AppContext.BaseDirectory ?? "",
+        Assembly.GetEntryAssembly()?.Location ?? "",
+        Process.GetCurrentProcess().MainModule?.FileName ?? ""
+    };
+
+            foreach (var r in roots.Distinct().Where(x => !string.IsNullOrEmpty(x)))
+            {
+                string startDir = File.Exists(r) ? Path.GetDirectoryName(r)! : r;
+                if (string.IsNullOrEmpty(startDir)) continue;
+
+                var dir = new DirectoryInfo(startDir);
+                for (int i = 0; i <= 6 && dir != null; i++)
+                {
+                    var candidate = Path.Combine(dir.FullName, "wwwroot", "settings.html");
+                    if (File.Exists(candidate)) return candidate;
+                    dir = dir.Parent;
+                }
+            }
+
+            return null;
         }
 
 
