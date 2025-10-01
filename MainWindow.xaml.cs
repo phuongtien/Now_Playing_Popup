@@ -573,50 +573,6 @@ exit /b 0
                 ApplySettingsToWindow();
             });
         }
-        public void OpenSettings()
-        {
-            try
-            {
-                // 1) Nếu server có Port public -> open http://localhost:PORT
-                int port = 0;
-                if (_httpServer != null)
-                {
-                    try
-                    {
-                        var pi = _httpServer.GetType().GetProperty("Port", BindingFlags.Public | BindingFlags.Instance);
-                        if (pi != null && pi.GetValue(_httpServer) is int p && p > 0)
-                        {
-                            port = p;
-                        }
-                    }
-                    catch { /* ignore reflection failures */ }
-                }
-
-                if (port > 0)
-                {
-                    var url = $"http://localhost:{port}/settings.html";
-                    Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
-                    return;
-                }
-
-                // 2) Nếu không có server: tìm file settings.html trong cây thư mục cài đặt
-                string? found = FindSettingsFile();
-                if (!string.IsNullOrEmpty(found))
-                {
-                    var uri = new Uri(found).AbsoluteUri; // => file:///E:/.../settings.html
-                    Process.Start(new ProcessStartInfo { FileName = uri, UseShellExecute = true });
-                    return;
-                }
-
-                // 3) Fallback: try common localhost port (legacy)
-                Process.Start(new ProcessStartInfo { FileName = "http://localhost:5000/settings.html", UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                LogError("OpenSettings error", ex);
-            }
-        }
-
 
         public void OpenSettings()
         {
