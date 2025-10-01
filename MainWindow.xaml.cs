@@ -33,7 +33,7 @@ namespace NowPlayingPopup
 
         // Volume monitoring
         private IAudioEndpointVolume? _audioEndpointVolume;
-        private Timer? _volumeTimer;
+        private System.Threading.Timer? _volumeTimer;
         private int _lastSentVolumePercent = -1;
 
         // Performance optimization
