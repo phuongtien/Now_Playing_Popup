@@ -101,27 +101,31 @@ namespace NowPlayingPopup
                 const string MANIFEST_URL = "https://raw.githubusercontent.com/phuongtien/Now_Playing_Popup_clean/refs/heads/Tien_main/releases/manifest.json";
 
                 var um = new UpdateManager();
+                // cache-bust khi fetch manifest
                 var manifest = await um.GetRemoteManifestAsync(MANIFEST_URL);
+                Debug.WriteLine($"[Update] Manifest fetched: version={manifest?.version} url={manifest?.url}");
                 if (manifest == null || string.IsNullOrEmpty(manifest.version) || string.IsNullOrEmpty(manifest.url))
                     return;
 
                 var localVer = UpdateManager.GetLocalVersion();
-                if (!UpdateManager.IsNewer(manifest.version, localVer))
-                    return;
+                Debug.WriteLine($"[Update] Local version resolved as: {localVer?.ToString() ?? "<null>"}");
 
-                // Hỏi user TRƯỚC KHI tải
+                if (!UpdateManager.IsNewer(manifest.version, localVer))
+                {
+                    Debug.WriteLine("[Update] No update available (IsNewer returned false).");
+                    return;
+                }
+
+                // hỏi user (có thể thay đổi thành silent theo settings)
                 var msg = $"Có bản cập nhật {manifest.version}.\n\n{manifest.notes}\n\nBạn có muốn tải và cập nhật bây giờ?";
                 var answer = WpfMessageBoxResult.None;
-
                 await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
                 {
                     answer = WpfMessageBox.Show(msg, "Cập nhật", WpfMessageBoxButton.YesNo, WpfMessageBoxImage.Information);
                 });
+                if (answer != WpfMessageBoxResult.Yes) return;
 
-                if (answer != WpfMessageBoxResult.Yes)
-                    return;
-
-                // Tạo và hiện ProgressWindow
+                // show progress window
                 ProgressWindow? progressWindow = null;
                 await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
                 {
@@ -134,10 +138,10 @@ namespace NowPlayingPopup
                 });
 
                 var tmpFile = Path.Combine(Path.GetTempPath(), $"NowPlayingPopup_Update_{Guid.NewGuid():N}.exe");
+                bool downloaded = false;
 
                 try
                 {
-                    // Download với progress
                     using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
                     http.DefaultRequestHeaders.Add("User-Agent", "NowPlayingPopup-Updater");
 
@@ -147,195 +151,201 @@ namespace NowPlayingPopup
                     var total = response.Content.Headers.ContentLength ?? -1L;
                     var canReportProgress = total > 0;
 
-                    using var stream = await response.Content.ReadAsStreamAsync();
-                    // share=none: lock when writing; acceptable since we own the file
-                    using var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
-
-                    var buffer = new byte[8192];
-                    long totalRead = 0;
-                    int bytesRead;
-
-                    while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                    using var responseStream = await response.Content.ReadAsStreamAsync();
+                    // write to temp file
+                    using (var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
                     {
-                        await fs.WriteAsync(buffer, 0, bytesRead);
-                        totalRead += bytesRead;
-
-                        if (canReportProgress && progressWindow != null)
+                        var buffer = new byte[81920];
+                        long totalRead = 0;
+                        int bytesRead;
+                        while ((bytesRead = await responseStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                         {
-                            int percent = (int)((double)totalRead / total * 100);
-                            await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                            await fs.WriteAsync(buffer, 0, bytesRead);
+                            totalRead += bytesRead;
+
+                            if (canReportProgress && progressWindow != null)
                             {
-                                progressWindow.SetProgress(percent);
-                            });
+                                int percent = (int)((double)totalRead / total * 100);
+                                await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                                {
+                                    progressWindow.SetProgress(percent);
+                                });
+                            }
                         }
+
+                        await fs.FlushAsync();
+                        // IMPORTANT: dispose fs BEFORE we try to run installer
                     }
 
-                    await fs.FlushAsync();
-
-                    // Đóng progress window
+                    downloaded = true;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine("[Update] Download failed: " + ex);
+                    downloaded = false;
+                }
+                finally
+                {
+                    // ensure progress window closed
                     await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
                     {
                         progressWindow?.Close();
                         progressWindow = null;
                     });
+                }
 
-                    // Verify checksum
-                    if (!string.IsNullOrWhiteSpace(manifest.sha256))
-                    {
-                        var computedHash = UpdateManager.ComputeSha256(tmpFile);
-                        if (!string.Equals(computedHash, manifest.sha256.Trim(), StringComparison.OrdinalIgnoreCase))
-                        {
-                            try { File.Delete(tmpFile); } catch { }
-                            await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                                WpfMessageBox.Show("File tải về không khớp checksum. Cập nhật bị hủy.",
-                                              "Lỗi", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error)
-                            );
-                            return;
-                        }
-                    }
+                if (!downloaded)
+                {
+                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                        WpfMessageBox.Show("Tải bản cập nhật thất bại.", "Cập nhật", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error));
+                    try { if (File.Exists(tmpFile)) File.Delete(tmpFile); } catch { }
+                    return;
+                }
 
-                    // Unblock file để Windows không chặn
-                    UnblockFile(tmpFile);
-
-                    // Verify file có thể thực thi
-                    var fileInfo = new FileInfo(tmpFile);
-                    if (!fileInfo.Exists || fileInfo.Length == 0)
-                    {
-                        await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                            WpfMessageBox.Show("File tải về không hợp lệ.", "Lỗi",
-                                          WpfMessageBoxButton.OK, WpfMessageBoxImage.Error)
-                        );
-                        return;
-                    }
-
-                    // Tạo batch script để chạy installer SAU KHI app đóng
-                    var batchFile = Path.Combine(Path.GetTempPath(), $"RunInstaller_{Guid.NewGuid():N}.bat");
-                    var appPath = Process.GetCurrentProcess().MainModule?.FileName ?? "";
-                    var appProcessName = Path.GetFileNameWithoutExtension(appPath);
-
-                    // Batch script: có log, chờ lâu hơn (30s), dùng PowerShell Start-Process -Verb runAs để nâng quyền installer
-                    var batchContent = $@"@echo off
-setlocal
-set LOGFILE=%TEMP%\NowPlayingPopup_Update_log_{Guid.NewGuid():N}.txt
-echo %DATE% %TIME% - Batch started > ""%LOGFILE%""
-echo Temp file: ""{tmpFile}"" >> ""%LOGFILE%""
-echo App process name: {appProcessName}.exe >> ""%LOGFILE%""
-echo Waiting for app to close... >> ""%LOGFILE%""
-
-timeout /t 2 /nobreak >nul
-
-set COUNTER=0
-:WAIT_LOOP
-tasklist /FI ""IMAGENAME eq {appProcessName}.exe"" 2>NUL | find /I /N ""{appProcessName}.exe"" >NUL
-if ""%ERRORLEVEL%""==""0"" (
-    set /a COUNTER+=1
-    echo Still running: %COUNTER% >> ""%LOGFILE%""
-    if %COUNTER% GEQ 30 (
-        echo Force closing app... >> ""%LOGFILE%""
-        taskkill /F /IM ""{appProcessName}.exe"" >NUL 2>&1
-        timeout /t 2 /nobreak >nul
-        goto START_INSTALLER
-    )
-    timeout /t 1 /nobreak >nul
-    goto WAIT_LOOP
-)
-
-:START_INSTALLER
-echo Starting installer... >> ""%LOGFILE%""
-echo Launching installer elevated (Start-Process -Verb runAs) >> ""%LOGFILE%""
-powershell -NoProfile -Command ""Start-Process -FilePath '{tmpFile}' -Verb runAs"" >> ""%LOGFILE%"" 2>&1
-echo Installer launched. %DATE% %TIME% >> ""%LOGFILE%""
-echo Leaving temp files for inspection >> ""%LOGFILE%""
-timeout /t 3 /nobreak >nul
-endlocal
-exit /b 0
-";
-
-                    File.WriteAllText(batchFile, batchContent, System.Text.Encoding.UTF8);
-
-                    // Chạy batch script: USESHELLEXECUTE = true để Windows xử lý properly (hiện UAC khi cần)
-                    bool batchStarted = false;
+                // verify checksum if có
+                if (!string.IsNullOrWhiteSpace(manifest.sha256))
+                {
                     try
                     {
-                        var psi = new ProcessStartInfo
+                        var computedHash = UpdateManager.ComputeSha256(tmpFile);
+                        Debug.WriteLine($"[Update] computed sha256: {computedHash}, expected: {manifest.sha256}");
+                        if (!string.Equals(computedHash, manifest.sha256.Trim(), StringComparison.OrdinalIgnoreCase))
                         {
-                            FileName = batchFile,
-                            UseShellExecute = true,
-                            WorkingDirectory = Path.GetTempPath()
-                        };
-
-                        var process = Process.Start(psi);
-
-                        if (process != null)
-                        {
-                            batchStarted = true;
-
-                            // Force cleanup để app đóng nhanh hơn
-                            await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                            // keep bad file for inspection (.bad) then remove original
+                            try
                             {
-                                ForceCleanupBeforeUpdate();
-
-                                // Shutdown ngay
-                                WpfApplication.Current.Shutdown();
-
-                                // Force exit sau 2 giây nếu vẫn chưa tắt
-                                _ = Task.Run(async () =>
-                                {
-                                    await Task.Delay(2000);
-                                    Environment.Exit(0);
-                                });
-                            });
+                                var bad = tmpFile + ".bad";
+                                if (File.Exists(bad)) File.Delete(bad);
+                                File.Move(tmpFile, bad);
+                            }
+                            catch { }
+                            await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                                WpfMessageBox.Show("File tải về không khớp checksum. Cập nhật bị hủy.", "Lỗi", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error)
+                            );
                             return;
                         }
                     }
                     catch (Exception ex)
                     {
-                        Debug.WriteLine($"Failed to start batch: {ex.Message}");
-                    }
-
-                    // Nếu batch không chạy được, thử cách khác
-                    if (!batchStarted)
-                    {
-                        await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                        {
-                            WpfMessageBox.Show(
-                                "Ứng dụng sẽ đóng.\n\nVui lòng chạy file installer thủ công tại:\n" + tmpFile,
-                                "Cập nhật",
-                                WpfMessageBoxButton.OK,
-                                WpfMessageBoxImage.Information
-                            );
-
-                            // Mở Explorer
-                            try
-                            {
-                                Process.Start("explorer.exe", $"/select,\"{tmpFile}\"");
-                            }
-                            catch { }
-
-                            WpfApplication.Current.Shutdown();
-                        });
+                        Debug.WriteLine("[Update] Checksum verify failed: " + ex);
+                        try { if (File.Exists(tmpFile)) File.Delete(tmpFile); } catch { }
                         return;
                     }
-
                 }
-                catch (Exception downloadEx)
+
+                // Unblock file & normalize attributes
+                UnblockFile(tmpFile);
+
+                var fileInfo = new FileInfo(tmpFile);
+                if (!fileInfo.Exists || fileInfo.Length == 0)
                 {
-                    // Đóng progress window nếu có lỗi
-                    if (progressWindow != null)
-                    {
-                        await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                        {
-                            progressWindow?.Close();
-                        });
-                    }
-
                     await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                        WpfMessageBox.Show($"Lỗi khi tải file:\n{downloadEx.Message}",
-                                      "Lỗi", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error)
-                    );
-
-                    // Dọn dẹp
+                        WpfMessageBox.Show("File tải về không hợp lệ.", "Lỗi", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error));
                     try { if (File.Exists(tmpFile)) File.Delete(tmpFile); } catch { }
+                    return;
+                }
+
+                // Try launching installer directly with elevation, with retry to handle AV locks
+                string appProcessName = Process.GetCurrentProcess().ProcessName; // no extension
+                bool launched = false;
+                int attempts = 0;
+                const int maxAttempts = 8;
+
+                while (!launched && attempts < maxAttempts)
+                {
+                    try
+                    {
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = tmpFile,
+                            UseShellExecute = true,
+                            Verb = "runas", // elevate
+                            WorkingDirectory = Path.GetTempPath()
+                        };
+                        Process.Start(psi);
+                        launched = true;
+                        Debug.WriteLine($"[Update] Installer launched directly (attempt {attempts + 1}).");
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"[Update] Launch attempt {attempts + 1} failed: {ex.Message}");
+                        // If file locked or AV scanning, wait and retry
+                        attempts++;
+                        await Task.Delay(1000);
+                    }
+                }
+
+                if (launched)
+                {
+                    // cleanup and exit app
+                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        ForceCleanupBeforeUpdate();
+                        WpfApplication.Current.Shutdown();
+                    });
+
+                    // fail-safe exit after short delay
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(2000);
+                        Environment.Exit(0);
+                    });
+                    return;
+                }
+
+                // fallback: create a batch that waits for app to exit, then starts installer elevated
+                var batchFile = Path.Combine(Path.GetTempPath(), $"RunInstaller_{Guid.NewGuid():N}.bat");
+                var batchContent = $@"@echo off
+setlocal
+set LOGFILE=%TEMP%\NowPlayingPopup_Update_log_{Guid.NewGuid():N}.txt
+echo %DATE% %TIME% - Batch started > ""%LOGFILE%""
+echo Temp file: ""{tmpFile}"" >> ""%LOGFILE%""
+echo Waiting for app to close... >> ""%LOGFILE%""
+:WAIT_LOOP
+tasklist /FI ""IMAGENAME eq {appProcessName}.exe"" 2>NUL | find /I ""{appProcessName}.exe"" >NUL
+if ""%ERRORLEVEL%""==""0"" (
+    timeout /t 1 /nobreak >nul
+    goto WAIT_LOOP
+)
+echo Starting installer... >> ""%LOGFILE%""
+powershell -NoProfile -Command ""Start-Process -FilePath '{tmpFile}' -Verb runAs"" >> ""%LOGFILE%"" 2>&1
+echo Installer launched. %DATE% %TIME% >> ""%LOGFILE%""
+endlocal
+exit /b 0
+";
+                File.WriteAllText(batchFile, batchContent, Encoding.UTF8);
+
+                try
+                {
+                    var psiBatch = new ProcessStartInfo
+                    {
+                        FileName = batchFile,
+                        UseShellExecute = true,
+                        WorkingDirectory = Path.GetTempPath()
+                    };
+                    Process.Start(psiBatch);
+
+                    // cleanup and exit app
+                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                    {
+                        ForceCleanupBeforeUpdate();
+                        WpfApplication.Current.Shutdown();
+                    });
+
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(2000);
+                        Environment.Exit(0);
+                    });
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine("[Update] Failed to start fallback batch: " + ex);
+                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
+                        WpfMessageBox.Show($"Không thể khởi chạy installer tự động.\nVui lòng chạy file thủ công tại:\n{tmpFile}", "Cập nhật", WpfMessageBoxButton.OK, WpfMessageBoxImage.Warning)
+                    );
+                    return;
                 }
             }
             catch (Exception ex)
@@ -1585,16 +1595,82 @@ exit /b 0
         {
             try
             {
-                return Assembly.GetEntryAssembly()?.GetName().Version;
+                // 1) Try assembly version first
+                var asm = Assembly.GetEntryAssembly();
+                var asmVer = asm?.GetName().Version;
+                if (asmVer != null)
+                {
+                    Debug.WriteLine($"[Update] Assembly version: {asmVer}");
+                    return asmVer;
+                }
+
+                // 2) Fallback: use FileVersionInfo from entry assembly location
+                var path = asm?.Location;
+                if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                {
+                    var v = FileVersionInfo.GetVersionInfo(path).ProductVersion;
+                    if (!string.IsNullOrEmpty(v) && Version.TryParse(NormalizeVersionString(v), out var fv))
+                    {
+                        Debug.WriteLine($"[Update] FileVersionInfo.ProductVersion: {v} -> parsed {fv}");
+                        return fv;
+                    }
+                }
+
+                // 3) Last resort: find executing process path
+                try
+                {
+                    var procPath = Process.GetCurrentProcess().MainModule?.FileName;
+                    if (!string.IsNullOrEmpty(procPath) && File.Exists(procPath))
+                    {
+                        var v = FileVersionInfo.GetVersionInfo(procPath).ProductVersion;
+                        if (!string.IsNullOrEmpty(v) && Version.TryParse(NormalizeVersionString(v), out var pv))
+                        {
+                            Debug.WriteLine($"[Update] Process MainModule version: {pv}");
+                            return pv;
+                        }
+                    }
+                }
+                catch { /* may throw on single-file, ignore */ }
+
+                Debug.WriteLine("[Update] Could not get local version via assembly/fileinfo.");
+                return null;
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("[Update] GetLocalVersion error: " + ex);
+                return null;
+            }
+
+            static string NormalizeVersionString(string s)
+            {
+                // Convert "1.0.5" -> "1.0.5.0" to make Version.TryParse happier
+                var parts = s.Split('.');
+                if (parts.Length == 3) return s + ".0";
+                return s;
+            }
         }
 
         public static bool IsNewer(string remoteVersion, Version? local)
         {
-            if (local == null) return true;
-            if (!Version.TryParse(remoteVersion, out var rv)) return false;
+            if (local == null) return true; // no local info -> assume newer
+            if (string.IsNullOrWhiteSpace(remoteVersion)) return false;
+
+            // Normalize and try parse remote
+            if (!Version.TryParse(NormalizeVersionString(remoteVersion), out var rv))
+            {
+                Debug.WriteLine($"[Update] Remote version parse failed: '{remoteVersion}'");
+                return false;
+            }
+
+            Debug.WriteLine($"[Update] Comparing remote {rv} to local {local}");
             return rv > local;
+
+            static string NormalizeVersionString(string s)
+            {
+                var parts = s.Split('.');
+                if (parts.Length == 3) return s + ".0";
+                return s;
+            }
         }
 
         public async Task<string?> DownloadFileAsync(string url, IProgress<double>? progress = null, CancellationToken ct = default)
@@ -1640,4 +1716,5 @@ exit /b 0
             return string.Equals(got, expectedHash.Trim().ToLowerInvariant(), StringComparison.OrdinalIgnoreCase);
         }
     }
+
 }
