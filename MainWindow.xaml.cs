@@ -13,6 +13,7 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using System.Reflection;
+using Forms = System.Windows.Forms;
 
 
 namespace NowPlayingPopup
@@ -52,9 +53,12 @@ namespace NowPlayingPopup
 
         private YouTubeMediaHandler? _youTubeHandler;
 
+        private Forms.NotifyIcon? _notifyIcon;
+
         public MainWindow()
         {
             InitializeComponent();
+            SetupTrayIcon();
             LoadWidgetSettings();
             Loaded += MainWindow_Loaded;
             Closed += MainWindow_Closed;
@@ -429,6 +433,114 @@ exit /b 0
                 }
             });
         }
+
+        private void SetupTrayIcon()
+        {
+            try
+            {
+                _notifyIcon = new Forms.NotifyIcon();
+                // Thử load icon từ resource (Resources/app.ico)
+                try
+                {
+                    var res = Application.GetResourceStream(new Uri("pack://application:,,,/Resources/app.ico"));
+                    if (res != null)
+                    {
+                        using var s = res.Stream;
+                        _notifyIcon.Icon = new Icon(s);
+                    }
+                    else
+                    {
+                        // Fallback: lấy icon của exe
+                        _notifyIcon.Icon = Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule!.FileName);
+                    }
+                }
+                catch
+                {
+                    // Fallback an toàn
+                    _notifyIcon.Icon = Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule!.FileName);
+                }
+
+                _notifyIcon.Text = "Now Playing Popup";
+                _notifyIcon.Visible = true;
+
+                // Context menu
+                var menu = new Forms.ContextMenuStrip();
+                var showItem = new Forms.ToolStripMenuItem("Open");
+                showItem.Click += (s, e) => ShowMainWindowFromTray();
+                menu.Items.Add(showItem);
+
+                var exitItem = new Forms.ToolStripMenuItem("Exit");
+                exitItem.Click += (s, e) =>
+                {
+                    // dọn dẹp và thoát
+                    _notifyIcon.Visible = false;
+                    _notifyIcon.Dispose();
+                    Application.Current.Shutdown();
+                };
+                menu.Items.Add(exitItem);
+
+                _notifyIcon.ContextMenuStrip = menu;
+
+                // Double click để mở
+                _notifyIcon.DoubleClick += (s, e) => ShowMainWindowFromTray();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("SetupTrayIcon failed: " + ex);
+            }
+        }
+
+        private void ShowMainWindowFromTray()
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                try
+                {
+                    // Hiện cửa sổ lên
+                    this.Show();
+                    this.WindowState = WindowState.Normal;
+                    this.Activate();
+
+                    // Nếu muốn hiện taskbar khi mở, bật tạm - tuỳ bạn
+                    this.ShowInTaskbar = true;
+                    // Và (nếu muốn) reset lại sau 1s:
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(1000);
+                        Application.Current.Dispatcher.Invoke(() => this.ShowInTaskbar = false);
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine("ShowMainWindowFromTray failed: " + ex);
+                }
+            });
+        }
+
+        private void MainWindow_StateChanged(object? sender, EventArgs e)
+        {
+            if (this.WindowState == WindowState.Minimized)
+            {
+                // Khi minimize -> ẩn, chỉ hiện ở tray
+                this.Hide();
+                this.ShowInTaskbar = false;
+            }
+        }
+
+        private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+        {
+            try
+            {
+                if (_notifyIcon != null)
+                {
+                    _notifyIcon.Visible = false;
+                    _notifyIcon.Dispose();
+                    _notifyIcon = null;
+                }
+            }
+            catch { }
+        }
+    }
 
         public WidgetSettings GetCurrentSettings() => currentSettings;
 
@@ -1310,129 +1422,129 @@ exit /b 0
         #region COM Interfaces
 
         [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
-        private class MMDeviceEnumeratorComObject { }
+    private class MMDeviceEnumeratorComObject { }
 
-        private enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
-        private enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }
+    private enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
+    private enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }
 
-        [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IMMDeviceEnumerator
-        {
-            int NotImpl1();
-            int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice ppDevice);
-        }
-
-        [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IMMDevice
-        {
-            int Activate([In] ref Guid iid, int dwClsCtx, IntPtr pActivationParams,
-                        [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
-        }
-
-        [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IAudioEndpointVolume
-        {
-            int RegisterControlChangeNotify(IntPtr pNotify);
-            int UnregisterControlChangeNotify(IntPtr pNotify);
-            int GetChannelCount(out uint pnChannelCount);
-            int SetMasterVolumeLevel(float fLevelDB, Guid pguidEventContext);
-            int SetMasterVolumeLevelScalar(float fLevel, Guid pguidEventContext);
-            int GetMasterVolumeLevel(out float pfLevelDB);
-            int GetMasterVolumeLevelScalar(out float pfLevel);
-        }
-
-        #endregion
-    }
-
-     public class UpdateManifest
+    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDeviceEnumerator
     {
-        public string? name { get; set; }
-        public string? version { get; set; }
-        public string? notes { get; set; }
-        public string? url { get; set; }
-        public string? sha256 { get; set; }
-        public string? publishedAt { get; set; }
+        int NotImpl1();
+        int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice ppDevice);
     }
 
-    public class UpdateManager
+    [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDevice
     {
-        private readonly HttpClient _http;
-        public UpdateManager()
-        {
-            _http = new HttpClient() { Timeout = TimeSpan.FromSeconds(30) };
-            _http.DefaultRequestHeaders.UserAgent.ParseAdd("NowPlayingPopup-Updater/1.0");
-        }
+        int Activate([In] ref Guid iid, int dwClsCtx, IntPtr pActivationParams,
+                    [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
+    }
 
-        public async Task<UpdateManifest?> GetRemoteManifestAsync(string manifestUrl)
-        {
-            try
-            {
-                var s = await _http.GetStringAsync(manifestUrl);
-                return JsonSerializer.Deserialize<UpdateManifest>(s, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            }
-            catch
-            {
-                return null;
-            }
-        }
+    [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioEndpointVolume
+    {
+        int RegisterControlChangeNotify(IntPtr pNotify);
+        int UnregisterControlChangeNotify(IntPtr pNotify);
+        int GetChannelCount(out uint pnChannelCount);
+        int SetMasterVolumeLevel(float fLevelDB, Guid pguidEventContext);
+        int SetMasterVolumeLevelScalar(float fLevel, Guid pguidEventContext);
+        int GetMasterVolumeLevel(out float pfLevelDB);
+        int GetMasterVolumeLevelScalar(out float pfLevel);
+    }
 
-        public static Version? GetLocalVersion()
-        {
-            try
-            {
-                return Assembly.GetEntryAssembly()?.GetName().Version;
-            }
-            catch { return null; }
-        }
+    #endregion
+}
 
-        public static bool IsNewer(string remoteVersion, Version? local)
-        {
-            if (local == null) return true;
-            if (!Version.TryParse(remoteVersion, out var rv)) return false;
-            return rv > local;
-        }
+public class UpdateManifest
+{
+    public string? name { get; set; }
+    public string? version { get; set; }
+    public string? notes { get; set; }
+    public string? url { get; set; }
+    public string? sha256 { get; set; }
+    public string? publishedAt { get; set; }
+}
 
-        public async Task<string?> DownloadFileAsync(string url, IProgress<double>? progress = null, CancellationToken ct = default)
-        {
-            var tmp = Path.Combine(Path.GetTempPath(), Path.GetFileName(new Uri(url).LocalPath));
-            try
-            {
-                using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-                resp.EnsureSuccessStatusCode();
-                var total = resp.Content.Headers.ContentLength ?? -1L;
-                using var stream = await resp.Content.ReadAsStreamAsync(ct);
-                using var fs = File.Create(tmp);
-                var buffer = new byte[81920];
-                long read = 0;
-                int r;
-                while ((r = await stream.ReadAsync(buffer, ct)) > 0)
-                {
-                    await fs.WriteAsync(buffer.AsMemory(0, r), ct);
-                    read += r;
-                    if (total > 0 && progress != null) progress.Report((double)read / total * 100.0);
-                }
-                return tmp;
-            }
-            catch
-            {
-                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-                return null;
-            }
-        }
+public class UpdateManager
+{
+    private readonly HttpClient _http;
+    public UpdateManager()
+    {
+        _http = new HttpClient() { Timeout = TimeSpan.FromSeconds(30) };
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("NowPlayingPopup-Updater/1.0");
+    }
 
-        public static string ComputeSha256(string filePath)
+    public async Task<UpdateManifest?> GetRemoteManifestAsync(string manifestUrl)
+    {
+        try
         {
-            using var sha = SHA256.Create();
-            using var fs = File.OpenRead(filePath);
-            var hash = sha.ComputeHash(fs);
-            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+            var s = await _http.GetStringAsync(manifestUrl);
+            return JsonSerializer.Deserialize<UpdateManifest>(s, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         }
-
-        public static bool VerifySha256(string filePath, string expectedHash)
+        catch
         {
-            if (string.IsNullOrWhiteSpace(expectedHash)) return true;
-            var got = ComputeSha256(filePath);
-            return string.Equals(got, expectedHash.Trim().ToLowerInvariant(), StringComparison.OrdinalIgnoreCase);
+            return null;
         }
     }
+
+    public static Version? GetLocalVersion()
+    {
+        try
+        {
+            return Assembly.GetEntryAssembly()?.GetName().Version;
+        }
+        catch { return null; }
+    }
+
+    public static bool IsNewer(string remoteVersion, Version? local)
+    {
+        if (local == null) return true;
+        if (!Version.TryParse(remoteVersion, out var rv)) return false;
+        return rv > local;
+    }
+
+    public async Task<string?> DownloadFileAsync(string url, IProgress<double>? progress = null, CancellationToken ct = default)
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), Path.GetFileName(new Uri(url).LocalPath));
+        try
+        {
+            using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+            resp.EnsureSuccessStatusCode();
+            var total = resp.Content.Headers.ContentLength ?? -1L;
+            using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            using var fs = File.Create(tmp);
+            var buffer = new byte[81920];
+            long read = 0;
+            int r;
+            while ((r = await stream.ReadAsync(buffer, ct)) > 0)
+            {
+                await fs.WriteAsync(buffer.AsMemory(0, r), ct);
+                read += r;
+                if (total > 0 && progress != null) progress.Report((double)read / total * 100.0);
+            }
+            return tmp;
+        }
+        catch
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            return null;
+        }
+    }
+
+    public static string ComputeSha256(string filePath)
+    {
+        using var sha = SHA256.Create();
+        using var fs = File.OpenRead(filePath);
+        var hash = sha.ComputeHash(fs);
+        return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+    }
+
+    public static bool VerifySha256(string filePath, string expectedHash)
+    {
+        if (string.IsNullOrWhiteSpace(expectedHash)) return true;
+        var got = ComputeSha256(filePath);
+        return string.Equals(got, expectedHash.Trim().ToLowerInvariant(), StringComparison.OrdinalIgnoreCase);
+    }
+}
 }
