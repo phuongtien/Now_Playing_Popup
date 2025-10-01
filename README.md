@@ -36,7 +36,7 @@ A beautiful desktop application that displays your currently playing Spotify tra
 #### Option 2: Build from Source
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/now-playing-popup.git
+git clone https://github.com/phuongtien/now-playing-popup-clean.git
 cd now-playing-popup
 
 # Open in Visual Studio or build via command line
