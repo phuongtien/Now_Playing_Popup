@@ -532,9 +532,7 @@ exit /b 0
                     this.WindowState = WindowState.Normal;
                     this.Activate();
 
-                    // Nếu muốn hiện taskbar khi mở, bật tạm - tuỳ bạn
                     this.ShowInTaskbar = true;
-                    // Và (nếu muốn) reset lại sau 1s:
                     _ = Task.Run(async () =>
                     {
                         await Task.Delay(1000);
