@@ -363,6 +363,33 @@ if exist ""{batchFile}"" del /f /q ""{batchFile}""
             }
         }
 
+         private async Task InitializeApplicationAsync()
+        {
+            if (!await InitializeWebView2Async()) return;
+            if (!SetupVirtualHostMapping()) return;
+
+            ConfigureWebView2Settings();
+            webView.Source = new Uri($"https://{HOST_NAME}/index.html");
+            ApplySettingsToWindow();
+
+            StartVolumeMonitor();
+            await InitMediaManagerAsync();
+            _youTubeHandler = new YouTubeMediaHandler(webView.CoreWebView2, this);
+            _ = Task.Run(async () =>
+            {
+                while (!_isDisposing)
+                {
+                    await Task.Delay(2000);
+
+                    // Nếu không có session Spotify/ứng dụng khác thì fallback sang YouTube
+                    if (_mediaManager == null || _mediaManager.GetCurrentSession() == null)
+                    {
+                        await _youTubeHandler.PollYouTubeAsync();
+                    }
+                }
+            });
+        }
+
         public WidgetSettings GetCurrentSettings() => currentSettings;
 
         public void UpdateSettingsFromWeb(WidgetSettings newSettings)
