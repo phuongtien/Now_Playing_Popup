@@ -80,6 +80,23 @@ if errorlevel 1 (
 )
 
 :: ==========================
+:: 6.5 Create and push tag for the release (important for correct source archives)
+:: ==========================
+echo Tagging commit as v%VERSION%...
+git tag -a "v%VERSION%" -m "Release v%VERSION%"
+if errorlevel 1 (
+    echo Tag creation failed!
+    pause
+    exit /b 1
+)
+git push origin "v%VERSION%"
+if errorlevel 1 (
+    echo Tag push failed!
+    pause
+    exit /b 1
+)
+
+:: ==========================
 :: 7. GitHub Release + upload
 :: ==========================
 echo Creating GitHub Release v%VERSION%...
@@ -93,17 +110,29 @@ if not exist "%FILEPATH%" (
     exit /b 1
 )
 
-gh release delete "v%VERSION%" -R %REPO% -y >nul 2>&1
-git tag -d "v%VERSION%" >nul 2>&1
+:: Optional: create a source zip and upload it as an explicit asset (if you want)
+set SRCZIP=%OUTPUT_DIR%\NowPlayingPopup-%VERSION%-source.zip
+powershell -Command "Compress-Archive -Path (Get-ChildItem -Path . -Exclude '.git','installer_build','bin','obj','%OUTPUT_DIR%') -DestinationPath '%SRCZIP%' -Force" >nul 2>&1
 
-gh release create "v%VERSION%" "%FILEPATH%" "releases\manifest.json" ^
-    -R %REPO% ^
-    --title "NowPlayingPopup v%VERSION%" ^
-    --notes "Auto release v%VERSION%: bug fixes and improvements"
+:: Delete any previous release/tag if desired (keep or remove as you prefer)
+gh release delete "v%VERSION%" -R %REPO% -y >nul 2>&1
+git tag -d "v%VERSION%" >nul 2>&1 || rem ignore if not exist
+
+:: Create release and upload assets: exe + manifest + optional source zip
+if exist "%SRCZIP%" (
+    gh release create "v%VERSION%" "%FILEPATH%" "releases\manifest.json" "%SRCZIP%" ^
+        -R %REPO% ^
+        --title "NowPlayingPopup v%VERSION%" ^
+        --notes "Auto release v%VERSION%: bug fixes and improvements"
+) else (
+    gh release create "v%VERSION%" "%FILEPATH%" "releases\manifest.json" ^
+        -R %REPO% ^
+        --title "NowPlayingPopup v%VERSION%" ^
+        --notes "Auto release v%VERSION%: bug fixes and improvements"
+)
 
 echo ====================================
 echo Release v%VERSION% has been created and files uploaded!
 echo Manifest.json committed and pushed to branch %BRANCH%
 echo ====================================
-
 pause
