@@ -450,25 +450,78 @@ exit /b 0
             try
             {
                 _notifyIcon = new Forms.NotifyIcon();
-                // Thử load icon từ resource (Resources/app.ico)
+
+                // Try load app icon from resources first, fallback to exe icon using robust path detection
                 try
                 {
                     var res = WpfApplication.GetResourceStream(new Uri("pack://application:,,,/Resources/app.ico"));
                     if (res != null)
                     {
                         using var s = res.Stream;
-                        _notifyIcon.Icon = new Icon(s);
+                        _notifyIcon.Icon = new System.Drawing.Icon(s);
                     }
                     else
                     {
-                        // Fallback: lấy icon của exe
-                        _notifyIcon.Icon = Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule!.FileName);
+                        // Robust exe path detection (Process.MainModule may be null on single-file publish)
+                        string? exePath = null;
+                        try { exePath = Process.GetCurrentProcess().MainModule?.FileName; } catch { exePath = null; }
+
+                        if (string.IsNullOrEmpty(exePath))
+                        {
+                            try
+                            {
+                                var asm = Assembly.GetEntryAssembly();
+                                exePath = asm?.Location;
+                            }
+                            catch { exePath = null; }
+                        }
+
+                        if (string.IsNullOrEmpty(exePath))
+                        {
+                            try
+                            {
+                                var asmName = Assembly.GetEntryAssembly()?.GetName().Name;
+                                if (!string.IsNullOrEmpty(asmName))
+                                    exePath = Path.Combine(AppContext.BaseDirectory, asmName + ".exe");
+                            }
+                            catch { exePath = null; }
+                        }
+
+                        if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+                        {
+                            _notifyIcon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
+                        }
+                        else
+                        {
+                            // last resort: create an empty icon to avoid null reference (optional)
+                            try
+                            {
+                                using var bmp = new System.Drawing.Bitmap(16, 16);
+                                using var g = System.Drawing.Graphics.FromImage(bmp);
+                                g.Clear(System.Drawing.Color.Transparent);
+                                _notifyIcon.Icon = System.Drawing.Icon.FromHandle(bmp.GetHicon());
+                            }
+                            catch { /* ignore */ }
+                        }
                     }
                 }
                 catch
                 {
-                    // Fallback an toàn
-                    _notifyIcon.Icon = Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule!.FileName);
+                    // Fallback safe: try to get exe icon (same robust approach)
+                    try
+                    {
+                        string? exePath = null;
+                        try { exePath = Process.GetCurrentProcess().MainModule?.FileName; } catch { exePath = null; }
+                        if (string.IsNullOrEmpty(exePath))
+                        {
+                            exePath = Assembly.GetEntryAssembly()?.Location;
+                        }
+                        if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+                        {
+                            _notifyIcon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
+                        }
+                    }
+                    catch { /* give up silently */ }
                 }
 
                 _notifyIcon.Text = "Now Playing Popup";
@@ -483,9 +536,12 @@ exit /b 0
                 var exitItem = new Forms.ToolStripMenuItem("Exit");
                 exitItem.Click += (s, e) =>
                 {
-                    // dọn dẹp và thoát
-                    _notifyIcon.Visible = false;
-                    _notifyIcon.Dispose();
+                    try
+                    {
+                        _notifyIcon.Visible = false;
+                        _notifyIcon.Dispose();
+                    }
+                    catch { }
                     WpfApplication.Current.Shutdown();
                 };
                 menu.Items.Add(exitItem);
@@ -500,6 +556,7 @@ exit /b 0
                 Debug.WriteLine("SetupTrayIcon failed: " + ex);
             }
         }
+
 
         private void ShowMainWindowFromTray()
         {
@@ -563,13 +620,11 @@ exit /b 0
                 ApplySettingsToWindow();
             });
         }
-
-        // === NEW: OpenSettings moved here so it can access _httpServer and LogError ===
         public void OpenSettings()
         {
             try
             {
-                var port = _httpServer?.Port ?? 5000;
+                int port = 5000; // nếu server của bạn dùng port khác, đổi ở đây hoặc implement Port property trên SettingsHttpServer.
                 var url = $"http://localhost:{port}/settings.html";
                 Process.Start(new ProcessStartInfo
                 {
@@ -582,6 +637,7 @@ exit /b 0
                 LogError("OpenSettings error", ex);
             }
         }
+
 
         private async Task<bool> InitializeWebView2Async()
         {
