@@ -1,92 +1,56 @@
 ﻿using System;
-using System.Text.Json;
-using System.Windows.Media;
+using System.Diagnostics;
+using System.Threading.Tasks;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
-using Windows.Media.Control;
-using System.IO;
-using System.Diagnostics;
-using System.Windows.Input;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Net.Http;
-using System.Security.Cryptography;
-using System.Threading.Tasks;
-using System.Reflection;
-using Forms = System.Windows.Forms;
-using WpfApplication = System.Windows.Application;
+using NowPlayingPopup.Models;
+using NowPlayingPopup.Services;
+using WpfProgressBar = System.Windows.Controls.ProgressBar;
 using WpfMessageBox = System.Windows.MessageBox;
-using WpfMessageBoxButton = System.Windows.MessageBoxButton;
-using WpfMessageBoxImage = System.Windows.MessageBoxImage;
-using WpfMessageBoxResult = System.Windows.MessageBoxResult;
-using ThreadingTimer = System.Threading.Timer;
-using Icon = System.Drawing.Icon;
-using System.Linq;
-using System.Threading;
+using WpfApp = System.Windows.Application;
+
 namespace NowPlayingPopup
 {
     public partial class MainWindow : Window
     {
-        // Media session management
-        private GlobalSystemMediaTransportControlsSessionManager? _mediaManager;
-        private GlobalSystemMediaTransportControlsSession? _currentSession;
-
+        // Services
+        private MediaSessionManager? _mediaSessionManager;
+        private MediaDataProcessor? _mediaDataProcessor;
+        private VolumeMonitor? _volumeMonitor;
+        private WebViewMessenger? _webViewMessenger;
+        private MediaOrchestrator? _mediaOrchestrator;
+        private SettingsManager? _settingsManager;
+        private WindowManager? _windowManager;
+        private TrayIconManager? _trayIconManager;
         private SettingsHttpServer? _httpServer;
-
-        // Caching and state management
-        private string? _lastTrackKey;
-        private string? _cachedAlbumArtDataUrl;
-        private readonly SemaphoreSlim _pushLock = new(1, 1);
-
-        // Volume monitoring
-        private IAudioEndpointVolume? _audioEndpointVolume;
-        private int _lastSentVolumePercent = -1;
-
-        // Performance optimization
-        private readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = false };
-        private volatile bool _isDisposing = false;
-        private readonly CancellationTokenSource _cancellationTokenSource = new();
+        private YouTubeMediaHandler? _youTubeHandler;
+        private UpdateService? _updateService;
 
         // Constants
         private const string HOST_NAME = "appassets";
-        private const int VOLUME_POLL_INTERVAL_MS = 2000;
-        private const int PUSH_DEBOUNCE_MS = 100;
-        private const bool ACCEPT_ONLY_SPOTIFY = false;
-
-        private WidgetSettings currentSettings = new WidgetSettings();
-        private ThreadingTimer? _volumeTimer;
-        private string? _lastSentPayloadHash = null;
-
-        private YouTubeMediaHandler? _youTubeHandler;
-
-        private Forms.NotifyIcon? _notifyIcon;
-
-        // Debounce helper
-        private DateTime _lastPushTime = DateTime.MinValue;
 
         public MainWindow()
         {
             InitializeComponent();
-            SetupTrayIcon();
-            LoadWidgetSettings();
             Loaded += MainWindow_Loaded;
             Closed += MainWindow_Closed;
-        }
-
-        private void MainWindow_Closed(object? sender, EventArgs e)
-        {
-            _httpServer?.Stop();
+            StateChanged += MainWindow_StateChanged;
+            LocationChanged += MainWindow_LocationChanged;
         }
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             try
             {
+                await InitializeServicesAsync();
                 await InitializeApplicationAsync();
 
-                _httpServer = new SettingsHttpServer(this);
+                // Start HTTP server for settings
+                _httpServer = new SettingsHttpServer(_settingsManager!, port: 5005);
                 _httpServer.Start();
-                _ = Task.Run(async () => await CheckForUpdatesOnStartup());
+
+                // Check for updates
+                _ = Task.Run(async () => await _updateService!.CheckForUpdatesOnStartupAsync());
             }
             catch (Exception ex)
             {
@@ -94,336 +58,40 @@ namespace NowPlayingPopup
             }
         }
 
-        private async Task CheckForUpdatesOnStartup()
+        private async Task InitializeServicesAsync()
         {
-            try
+            // Initialize settings first
+            _settingsManager = new SettingsManager();
+            _settingsManager.Load();
+            _settingsManager.SettingsChanged += OnSettingsChanged;
+
+            // Initialize window manager
+            _windowManager = new WindowManager(this);
+
+            // Initialize tray icon
+            _trayIconManager = new TrayIconManager(this);
+            _trayIconManager.ShowRequested += (s, e) =>
             {
-                const string MANIFEST_URL = "https://raw.githubusercontent.com/phuongtien/Now_Playing_Popup_clean/refs/heads/Tien_main/releases/manifest.json";
-
-                var um = new UpdateManager();
-                // cache-bust khi fetch manifest
-                var manifest = await um.GetRemoteManifestAsync(MANIFEST_URL);
-                Debug.WriteLine($"[Update] Manifest fetched: version={manifest?.version} url={manifest?.url}");
-                if (manifest == null || string.IsNullOrEmpty(manifest.version) || string.IsNullOrEmpty(manifest.url))
-                    return;
-
-                var localVer = UpdateManager.GetLocalVersion();
-                Debug.WriteLine($"[Update] Local version resolved as: {localVer?.ToString() ?? "<null>"}");
-
-                if (!UpdateManager.IsNewer(manifest.version, localVer))
+                _windowManager.RestoreFromTray();
+                // Temporarily show in taskbar
+                this.ShowInTaskbar = true;
+                _ = Task.Run(async () =>
                 {
-                    Debug.WriteLine("[Update] No update available (IsNewer returned false).");
-                    return;
-                }
-
-                // hỏi user (có thể thay đổi thành silent theo settings)
-                var msg = $"Có bản cập nhật {manifest.version}.\n\n{manifest.notes}\n\nBạn có muốn tải và cập nhật bây giờ?";
-                var answer = WpfMessageBoxResult.None;
-                await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    answer = WpfMessageBox.Show(msg, "Cập nhật", WpfMessageBoxButton.YesNo, WpfMessageBoxImage.Information);
+                    await Task.Delay(1000);
+                    Dispatcher.Invoke(() => this.ShowInTaskbar = false);
                 });
-                if (answer != WpfMessageBoxResult.Yes) return;
+            };
+            _trayIconManager.ExitRequested += (s, e) => WpfApp.Current.Shutdown();
 
-                // show progress window
-                ProgressWindow? progressWindow = null;
-                await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                {
-                    progressWindow = new ProgressWindow
-                    {
-                        Owner = this,
-                        WindowStartupLocation = WindowStartupLocation.CenterOwner
-                    };
-                    progressWindow.Show();
-                });
+            _trayIconManager.Initialize();
 
-                var tmpFile = Path.Combine(Path.GetTempPath(), $"NowPlayingPopup_Update_{Guid.NewGuid():N}.exe");
-                bool downloaded = false;
+            // Initialize media services
+            _mediaSessionManager = new MediaSessionManager();
+            _mediaDataProcessor = new MediaDataProcessor();
+            _volumeMonitor = new VolumeMonitor();
 
-                try
-                {
-                    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-                    http.DefaultRequestHeaders.Add("User-Agent", "NowPlayingPopup-Updater");
-
-                    using var response = await http.GetAsync(manifest.url!, HttpCompletionOption.ResponseHeadersRead);
-                    response.EnsureSuccessStatusCode();
-
-                    var total = response.Content.Headers.ContentLength ?? -1L;
-                    var canReportProgress = total > 0;
-
-                    using var responseStream = await response.Content.ReadAsStreamAsync();
-                    // write to temp file
-                    using (var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
-                    {
-                        var buffer = new byte[81920];
-                        long totalRead = 0;
-                        int bytesRead;
-                        while ((bytesRead = await responseStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
-                        {
-                            await fs.WriteAsync(buffer, 0, bytesRead);
-                            totalRead += bytesRead;
-
-                            if (canReportProgress && progressWindow != null)
-                            {
-                                int percent = (int)((double)totalRead / total * 100);
-                                await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                                {
-                                    progressWindow.SetProgress(percent);
-                                });
-                            }
-                        }
-
-                        await fs.FlushAsync();
-                        // IMPORTANT: dispose fs BEFORE we try to run installer
-                    }
-
-                    downloaded = true;
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine("[Update] Download failed: " + ex);
-                    downloaded = false;
-                }
-                finally
-                {
-                    // ensure progress window closed
-                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                    {
-                        progressWindow?.Close();
-                        progressWindow = null;
-                    });
-                }
-
-                if (!downloaded)
-                {
-                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                        WpfMessageBox.Show("Tải bản cập nhật thất bại.", "Cập nhật", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error));
-                    try { if (File.Exists(tmpFile)) File.Delete(tmpFile); } catch { }
-                    return;
-                }
-
-                // verify checksum if có
-                if (!string.IsNullOrWhiteSpace(manifest.sha256))
-                {
-                    try
-                    {
-                        var computedHash = UpdateManager.ComputeSha256(tmpFile);
-                        Debug.WriteLine($"[Update] computed sha256: {computedHash}, expected: {manifest.sha256}");
-                        if (!string.Equals(computedHash, manifest.sha256.Trim(), StringComparison.OrdinalIgnoreCase))
-                        {
-                            // keep bad file for inspection (.bad) then remove original
-                            try
-                            {
-                                var bad = tmpFile + ".bad";
-                                if (File.Exists(bad)) File.Delete(bad);
-                                File.Move(tmpFile, bad);
-                            }
-                            catch { }
-                            await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                                WpfMessageBox.Show("File tải về không khớp checksum. Cập nhật bị hủy.", "Lỗi", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error)
-                            );
-                            return;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine("[Update] Checksum verify failed: " + ex);
-                        try { if (File.Exists(tmpFile)) File.Delete(tmpFile); } catch { }
-                        return;
-                    }
-                }
-
-                // Unblock file & normalize attributes
-                UnblockFile(tmpFile);
-
-                var fileInfo = new FileInfo(tmpFile);
-                if (!fileInfo.Exists || fileInfo.Length == 0)
-                {
-                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                        WpfMessageBox.Show("File tải về không hợp lệ.", "Lỗi", WpfMessageBoxButton.OK, WpfMessageBoxImage.Error));
-                    try { if (File.Exists(tmpFile)) File.Delete(tmpFile); } catch { }
-                    return;
-                }
-
-                // Try launching installer directly with elevation, with retry to handle AV locks
-                string appProcessName = Process.GetCurrentProcess().ProcessName; // no extension
-                bool launched = false;
-                int attempts = 0;
-                const int maxAttempts = 8;
-
-                while (!launched && attempts < maxAttempts)
-                {
-                    try
-                    {
-                        var psi = new ProcessStartInfo
-                        {
-                            FileName = tmpFile,
-                            UseShellExecute = true,
-                            Verb = "runas", // elevate
-                            WorkingDirectory = Path.GetTempPath()
-                        };
-                        Process.Start(psi);
-                        launched = true;
-                        Debug.WriteLine($"[Update] Installer launched directly (attempt {attempts + 1}).");
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine($"[Update] Launch attempt {attempts + 1} failed: {ex.Message}");
-                        // If file locked or AV scanning, wait and retry
-                        attempts++;
-                        await Task.Delay(1000);
-                    }
-                }
-
-                if (launched)
-                {
-                    // cleanup and exit app
-                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                    {
-                        ForceCleanupBeforeUpdate();
-                        WpfApplication.Current.Shutdown();
-                    });
-
-                    // fail-safe exit after short delay
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(2000);
-                        Environment.Exit(0);
-                    });
-                    return;
-                }
-
-                // fallback: create a batch that waits for app to exit, then starts installer elevated
-                var batchFile = Path.Combine(Path.GetTempPath(), $"RunInstaller_{Guid.NewGuid():N}.bat");
-                var batchContent = $@"@echo off
-setlocal
-set LOGFILE=%TEMP%\NowPlayingPopup_Update_log_{Guid.NewGuid():N}.txt
-echo %DATE% %TIME% - Batch started > ""%LOGFILE%""
-echo Temp file: ""{tmpFile}"" >> ""%LOGFILE%""
-echo Waiting for app to close... >> ""%LOGFILE%""
-:WAIT_LOOP
-tasklist /FI ""IMAGENAME eq {appProcessName}.exe"" 2>NUL | find /I ""{appProcessName}.exe"" >NUL
-if ""%ERRORLEVEL%""==""0"" (
-    timeout /t 1 /nobreak >nul
-    goto WAIT_LOOP
-)
-echo Starting installer... >> ""%LOGFILE%""
-powershell -NoProfile -Command ""Start-Process -FilePath '{tmpFile}' -Verb runAs"" >> ""%LOGFILE%"" 2>&1
-echo Installer launched. %DATE% %TIME% >> ""%LOGFILE%""
-endlocal
-exit /b 0
-";
-                File.WriteAllText(batchFile, batchContent, Encoding.UTF8);
-
-                try
-                {
-                    var psiBatch = new ProcessStartInfo
-                    {
-                        FileName = batchFile,
-                        UseShellExecute = true,
-                        WorkingDirectory = Path.GetTempPath()
-                    };
-                    Process.Start(psiBatch);
-
-                    // cleanup and exit app
-                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                    {
-                        ForceCleanupBeforeUpdate();
-                        WpfApplication.Current.Shutdown();
-                    });
-
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(2000);
-                        Environment.Exit(0);
-                    });
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine("[Update] Failed to start fallback batch: " + ex);
-                    await WpfApplication.Current.Dispatcher.InvokeAsync(() =>
-                        WpfMessageBox.Show($"Không thể khởi chạy installer tự động.\nVui lòng chạy file thủ công tại:\n{tmpFile}", "Cập nhật", WpfMessageBoxButton.OK, WpfMessageBoxImage.Warning)
-                    );
-                    return;
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine("Update check failed: " + ex.Message);
-            }
-        }
-
-        // Hàm unblock file để Windows không chặn
-        private static void UnblockFile(string filePath)
-        {
-            try
-            {
-                // Xóa Zone.Identifier stream
-                var zoneIdentifier = filePath + ":Zone.Identifier";
-                try { if (File.Exists(zoneIdentifier)) File.Delete(zoneIdentifier); } catch { }
-
-                // Dùng PowerShell Unblock-File (cách an toàn nhất)
-                try
-                {
-                    var psi = new ProcessStartInfo
-                    {
-                        FileName = "powershell.exe",
-                        Arguments = $"-NoProfile -Command \"Unblock-File -Path '{filePath}'\"",
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        WindowStyle = ProcessWindowStyle.Hidden
-                    };
-                    var process = Process.Start(psi);
-                    process?.WaitForExit(5000);
-                }
-                catch { }
-
-                // Đặt attributes bình thường
-                try { File.SetAttributes(filePath, FileAttributes.Normal); } catch { }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"UnblockFile failed: {ex.Message}");
-            }
-        }
-        // Cleanup nhanh trước khi shutdown
-        private void ForceCleanupBeforeUpdate()
-        {
-            try
-            {
-                _isDisposing = true;
-
-                // Stop cancellation token
-                try { _cancellationTokenSource?.Cancel(); } catch { }
-
-                // Stop volume timer
-                try { _volumeTimer?.Dispose(); } catch { }
-
-                // Stop HTTP server
-                try { _httpServer?.Stop(); } catch { }
-
-                // Unsubscribe media events
-                if (_currentSession != null)
-                {
-                    try { UnsubscribeFromSessionEvents(_currentSession); } catch { }
-                }
-
-                // Dispose WebView2
-                try
-                {
-                    if (webView?.CoreWebView2 != null)
-                    {
-                        webView.CoreWebView2.WebMessageReceived -= OnWebMessageReceived;
-                    }
-                    webView?.Dispose();
-                }
-                catch { }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"ForceCleanupBeforeUpdate error: {ex.Message}");
-            }
+            // Initialize update service
+            _updateService = new UpdateService(this);
         }
 
         private async Task InitializeApplicationAsync()
@@ -432,20 +100,41 @@ exit /b 0
             if (!SetupVirtualHostMapping()) return;
 
             ConfigureWebView2Settings();
-            webView.Source = new Uri($"https://{HOST_NAME}/index.html");
-            ApplySettingsToWindow();
 
-            StartVolumeMonitor();
-            await InitMediaManagerAsync();
-            _youTubeHandler = new YouTubeMediaHandler(webView.CoreWebView2, this);
+            // Initialize messenger after WebView2 is ready
+            _webViewMessenger = new WebViewMessenger(webView);
+            _webViewMessenger.AttachMessageHandler();
+            _webViewMessenger.Ready += async (s, e) => await _mediaOrchestrator!.PushCurrentSessionAsync();
+            _webViewMessenger.SettingsReceived += OnWebViewSettingsReceived;
+            _webViewMessenger.ApplyPositionRequested += OnApplyPositionRequested;
+
+            webView.Source = new Uri($"https://{HOST_NAME}/index.html");
+            _windowManager!.ApplySettings(_settingsManager!.CurrentSettings);
+
+            // Initialize media orchestration
+            if (await _mediaSessionManager!.InitializeAsync())
+            {
+                _volumeMonitor!.Initialize();
+
+                _mediaOrchestrator = new MediaOrchestrator(
+                    _mediaSessionManager,
+                    _mediaDataProcessor!,
+                    _volumeMonitor,
+                    _webViewMessenger);
+            }
+
+            // Initialize YouTube handler
+            _youTubeHandler = new YouTubeMediaHandler(webView.CoreWebView2, _webViewMessenger);
+
+            // Start YouTube polling in background
             _ = Task.Run(async () =>
             {
-                while (!_isDisposing)
+                while (!IsDisposed)
                 {
                     await Task.Delay(2000);
 
-                    // Nếu không có session Spotify/ứng dụng khác thì fallback sang YouTube
-                    if (_mediaManager == null || _mediaManager.GetCurrentSession() == null)
+                    // Fallback to YouTube if no native media session
+                    if (_mediaSessionManager?.GetCurrentSession() == null)
                     {
                         await _youTubeHandler.PollYouTubeAsync();
                     }
@@ -453,238 +142,39 @@ exit /b 0
             });
         }
 
-        private void SetupTrayIcon()
-        {
-            try
-            {
-                // Nếu đã có rồi thì không tạo nữa
-                if (_notifyIcon != null) return;
-
-                _notifyIcon = new Forms.NotifyIcon();
-
-                // Load icon (try resource -> exe -> fallback)
-                try
-                {
-                    var res = WpfApplication.GetResourceStream(new Uri("pack://application:,,,/Resources/app.ico"));
-                    if (res != null)
-                    {
-                        using var s = res.Stream;
-                        _notifyIcon.Icon = new System.Drawing.Icon(s);
-                    }
-                    else
-                    {
-                        string? exePath = null;
-                        try { exePath = Process.GetCurrentProcess().MainModule?.FileName; } catch { exePath = null; }
-                        if (string.IsNullOrEmpty(exePath)) exePath = Assembly.GetEntryAssembly()?.Location;
-                        if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
-                            _notifyIcon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
-                    }
-                }
-                catch
-                {
-                    // ignore icon load failure
-                }
-
-                _notifyIcon.Text = "Now Playing Popup";
-                _notifyIcon.Visible = true;
-
-                // Context menu
-                var menu = new Forms.ContextMenuStrip();
-                var showItem = new Forms.ToolStripMenuItem("Open");
-                showItem.Click += (s, e) => ShowMainWindowFromTray();
-                menu.Items.Add(showItem);
-
-                var exitItem = new Forms.ToolStripMenuItem("Exit");
-                exitItem.Click += (s, e) =>
-                {
-                    try { _notifyIcon.Visible = false; _notifyIcon.Dispose(); } catch { }
-                    WpfApplication.Current.Shutdown();
-                };
-                menu.Items.Add(exitItem);
-
-                _notifyIcon.ContextMenuStrip = menu;
-
-                // Double click để mở (lưu ý: tránh đăng handler nhiều lần)
-                _notifyIcon.DoubleClick -= NotifyIcon_DoubleClick;
-                _notifyIcon.DoubleClick += NotifyIcon_DoubleClick;
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine("SetupTrayIcon failed: " + ex);
-            }
-        }
-
-        private void NotifyIcon_DoubleClick(object? sender, EventArgs e)
-        {
-            ShowMainWindowFromTray();
-        }
-
-
-
-        private void ShowMainWindowFromTray()
-        {
-            WpfApplication.Current.Dispatcher.Invoke(() =>
-            {
-                try
-                {
-                    // Hiện cửa sổ lên
-                    this.Show();
-                    this.WindowState = WindowState.Normal;
-                    this.Activate();
-
-                    this.ShowInTaskbar = true;
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(1000);
-                        WpfApplication.Current.Dispatcher.Invoke(() => this.ShowInTaskbar = false);
-                    });
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine("ShowMainWindowFromTray failed: " + ex);
-                }
-            });
-        }
-
-        private void MainWindow_StateChanged(object? sender, EventArgs e)
-        {
-            if (this.WindowState == WindowState.Minimized)
-            {
-                // Khi minimize -> ẩn, chỉ hiện ở tray
-                this.Hide();
-                this.ShowInTaskbar = false;
-            }
-        }
-
-        private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
-        {
-            try
-            {
-                if (_notifyIcon != null)
-                {
-                    _notifyIcon.Visible = false;
-                    _notifyIcon.Dispose();
-                    _notifyIcon = null;
-                }
-            }
-            catch { }
-        }
-
-        public WidgetSettings GetCurrentSettings() => currentSettings;
-
-        public void UpdateSettingsFromWeb(WidgetSettings newSettings)
-        {
-            Dispatcher.Invoke(() =>
-            {
-                currentSettings = newSettings;
-                SaveWidgetSettings();
-                ApplySettingsToWindow();
-            });
-        }
-
-        public void OpenSettings()
-        {
-            try
-            {
-                // 1) Nếu server có Port public -> open http://localhost:PORT
-                int port = 0;
-                if (_httpServer != null)
-                {
-                    try
-                    {
-                        var pi = _httpServer.GetType().GetProperty("Port", BindingFlags.Public | BindingFlags.Instance);
-                        if (pi != null && pi.GetValue(_httpServer) is int p && p > 0)
-                        {
-                            port = p;
-                        }
-                    }
-                    catch { /* ignore reflection failures */ }
-                }
-
-                if (port > 0)
-                {
-                    var url = $"http://localhost:{port}/settings.html";
-                    Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
-                    return;
-                }
-
-                // 2) Nếu không có server: tìm file settings.html trong cây thư mục cài đặt
-                string? found = FindSettingsFile();
-                if (!string.IsNullOrEmpty(found))
-                {
-                    var uri = new Uri(found).AbsoluteUri; // => file:///E:/.../settings.html
-                    Process.Start(new ProcessStartInfo { FileName = uri, UseShellExecute = true });
-                    return;
-                }
-
-                // 3) Fallback: try common localhost port (legacy)
-                Process.Start(new ProcessStartInfo { FileName = "http://localhost:5000/settings.html", UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                LogError("OpenSettings error", ex);
-            }
-        }
-
-        // helper (nếu chưa có)
-        private string? FindSettingsFile()
-        {
-            string[] roots = new[]
-            {
-        AppContext.BaseDirectory ?? "",
-        Assembly.GetEntryAssembly()?.Location ?? "",
-        Process.GetCurrentProcess().MainModule?.FileName ?? ""
-    };
-
-            foreach (var r in roots.Distinct().Where(x => !string.IsNullOrEmpty(x)))
-            {
-                string startDir = File.Exists(r) ? Path.GetDirectoryName(r)! : r;
-                if (string.IsNullOrEmpty(startDir)) continue;
-
-                var dir = new DirectoryInfo(startDir);
-                for (int i = 0; i <= 6 && dir != null; i++)
-                {
-                    var candidate = Path.Combine(dir.FullName, "wwwroot", "settings.html");
-                    if (File.Exists(candidate)) return candidate;
-                    dir = dir.Parent;
-                }
-            }
-
-            return null;
-        }
-
+        private bool IsDisposed { get; set; }
 
         private async Task<bool> InitializeWebView2Async()
         {
             try
             {
-                string userDataFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "webview2_user_data");
+                string userDataFolder = System.IO.Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory, "webview2_user_data");
+
                 var options = new CoreWebView2EnvironmentOptions(
-                    additionalBrowserArguments: "--disable-gpu --disable-features=VizDisplayCompositor"
-                );
+                    additionalBrowserArguments: "--disable-gpu --disable-features=VizDisplayCompositor");
 
                 CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(
                     browserExecutableFolder: null,
                     userDataFolder: userDataFolder,
-                    options: options
-                );
+                    options: options);
 
                 await webView.EnsureCoreWebView2Async(env);
-                ConfigureWebView2Settings();
                 return true;
             }
             catch (Exception ex)
             {
-                LogError("WebView2 initialization failed", ex);
+                Debug.WriteLine($"WebView2 initialization failed: {ex}");
                 return false;
             }
         }
 
         private bool SetupVirtualHostMapping()
         {
-            var wwwrootPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "wwwroot");
+            var wwwrootPath = System.IO.Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory, "wwwroot");
 
-            if (!Directory.Exists(wwwrootPath))
+            if (!System.IO.Directory.Exists(wwwrootPath))
             {
                 WpfMessageBox.Show($"wwwroot folder not found at: {wwwrootPath}");
                 return false;
@@ -699,7 +189,6 @@ exit /b 0
         {
             try
             {
-                webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
                 var settings = webView.CoreWebView2.Settings;
                 settings.AreDevToolsEnabled = false;
                 settings.IsStatusBarEnabled = false;
@@ -708,1011 +197,116 @@ exit /b 0
             }
             catch (Exception ex)
             {
-                LogError("WebView2 settings configuration failed", ex);
+                Debug.WriteLine($"WebView2 settings configuration failed: {ex}");
             }
         }
 
-        protected override void OnLocationChanged(EventArgs e)
+        private void OnSettingsChanged(object? sender, WidgetSettings settings)
         {
-            base.OnLocationChanged(e);
-            if (currentSettings.RememberPosition)
+            _windowManager?.ApplySettings(settings);
+            _webViewMessenger?.SendSettings(settings);
+        }
+
+        private void OnWebViewSettingsReceived(object? sender, WidgetSettings settings)
+        {
+            try
             {
-                currentSettings.PositionX = this.Left;
-                currentSettings.PositionY = this.Top;
-                Task.Run(async () =>
+                _settingsManager?.Update(settings);
+            }
+            catch (ValidationException ex)
+            {
+                Debug.WriteLine($"Settings validation failed: {ex.Message}");
+                WpfMessageBox.Show($"Invalid settings:\n{ex.Message}", "Validation Error",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void OnApplyPositionRequested(object? sender, string position)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                _settingsManager?.UpdatePopupPosition(position);
+                _windowManager?.ApplyPopupPosition(position);
+            });
+        }
+
+        private void MainWindow_LocationChanged(object? sender, EventArgs e)
+        {
+            if (_settingsManager?.CurrentSettings.RememberPosition == true)
+            {
+                _settingsManager.UpdatePosition(this.Left, this.Top);
+                _ = Task.Run(async () =>
                 {
                     await Task.Delay(1000);
-                    SaveWidgetSettings();
+                    _settingsManager?.Save();
                 });
             }
+        }
+
+        private void MainWindow_StateChanged(object? sender, EventArgs e)
+        {
+            if (this.WindowState == WindowState.Minimized)
+            {
+                _windowManager?.MinimizeToTray();
+            }
+        }
+
+        private void MainWindow_Closed(object? sender, EventArgs e)
+        {
+            IsDisposed = true;
+            CleanupServices();
+        }
+
+        private void CleanupServices()
+        {
+            _httpServer?.Dispose();
+            _mediaOrchestrator?.Dispose();
+            _mediaSessionManager?.Dispose();
+            _volumeMonitor?.Dispose();
+            _webViewMessenger?.Dispose();
+            _trayIconManager?.Dispose();
+            _youTubeHandler?.Dispose();
         }
 
         private async Task HandleInitializationErrorAsync(Exception ex)
         {
             WpfMessageBox.Show($"Application initialization failed: {ex.Message}");
-            await LogErrorToFileAsync("initialization_error.log", ex);
+            Debug.WriteLine($"Initialization error: {ex}");
         }
 
-        private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs args)
+        // Public API for backward compatibility (if needed)
+        public WidgetSettings GetCurrentSettings() =>
+            _settingsManager?.CurrentSettings ?? new WidgetSettings();
+
+        public void UpdateSettingsFromWeb(WidgetSettings newSettings)
         {
-            if (_isDisposing) return;
-
-            try
+            Dispatcher.Invoke(() =>
             {
-                string? message = args.TryGetWebMessageAsString();
-                if (string.IsNullOrEmpty(message)) return;
-
-                ProcessWebMessage(message);
-            }
-            catch (Exception ex)
-            {
-                LogError("WebMessage processing failed", ex);
-            }
-        }
-
-        private void ProcessWebMessage(string message)
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(message);
-                if (doc.RootElement.TryGetProperty("type", out var typeElement))
-                {
-                    var type = typeElement.GetString();
-
-                    if (type == "ready")
-                    {
-                        _ = Task.Run(() => PushCurrentSessionAsync(), _cancellationTokenSource.Token);
-                        return;
-                    }
-
-                    if (type == "widgetSettings")
-                    {
-                        if (doc.RootElement.TryGetProperty("data", out var dataElement))
-                        {
-                            var newSettings = dataElement.Deserialize<WidgetSettings>();
-                            if (newSettings != null)
-                            {
-                                currentSettings = newSettings;
-                                SaveWidgetSettings();
-                                ApplySettingsToWindow();
-                            }
-                        }
-                        return;
-                    }
-
-                    if (type == "applyPositionNow")
-                    {
-                        if (doc.RootElement.TryGetProperty("data", out var positionData) &&
-                            positionData.TryGetProperty("popupPosition", out var positionElement))
-                        {
-                            var position = positionElement.GetString();
-                            if (!string.IsNullOrEmpty(position))
-                            {
-                                currentSettings.PopupPosition = position;
-                                Dispatcher.Invoke(() => ApplyPopupPosition());
-                                SaveWidgetSettings();
-                            }
-                        }
-                        return;
-                    }
-                }
-            }
-            catch (JsonException)
-            {
-                _ = Task.Run(() => PushCurrentSessionAsync(), _cancellationTokenSource.Token);
-            }
-            catch (Exception ex)
-            {
-                LogError("ProcessWebMessage error", ex);
-                _ = Task.Run(() => PushCurrentSessionAsync(), _cancellationTokenSource.Token);
-            }
-        }
-
-        #region Widget Settings Management
-
-        private string GetSettingsFilePath()
-        {
-            string settingsDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "NowPlayingPopup");
-
-            if (!Directory.Exists(settingsDir))
-                Directory.CreateDirectory(settingsDir);
-
-            return Path.Combine(settingsDir, "widget_settings.json");
-        }
-
-        private void LoadWidgetSettings()
-        {
-            try
-            {
-                string settingsPath = GetSettingsFilePath();
-                if (File.Exists(settingsPath))
-                {
-                    string json = File.ReadAllText(settingsPath, Encoding.UTF8);
-                    if (!string.IsNullOrWhiteSpace(json))
-                    {
-                        var loadedSettings = JsonSerializer.Deserialize<WidgetSettings>(json);
-                        if (loadedSettings != null)
-                        {
-                            currentSettings = loadedSettings;
-                            var errors = currentSettings.ValidateSettings();
-                            if (errors.Length > 0)
-                            {
-                                currentSettings = new WidgetSettings();
-                                SaveWidgetSettings();
-                            }
-                        }
-                        else
-                        {
-                            currentSettings = new WidgetSettings();
-                            SaveWidgetSettings();
-                        }
-                    }
-                    else
-                    {
-                        currentSettings = new WidgetSettings();
-                        SaveWidgetSettings();
-                    }
-                }
-                else
-                {
-                    currentSettings = new WidgetSettings();
-                    SaveWidgetSettings();
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError("LoadWidgetSettings error", ex);
-                currentSettings = new WidgetSettings();
-                SaveWidgetSettings();
-            }
-        }
-
-        private void SaveWidgetSettings()
-        {
-            try
-            {
-                string settingsPath = GetSettingsFilePath();
-                var options = new JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-                };
-                string json = JsonSerializer.Serialize(currentSettings, options);
-                File.WriteAllText(settingsPath, json, Encoding.UTF8);
-            }
-            catch (Exception ex)
-            {
-                LogError("SaveWidgetSettings error", ex);
-            }
-        }
-
-        private void ApplySettingsToWindow()
-        {
-            try
-            {
-                Dispatcher.Invoke(() =>
-                {
-                    var (width, height) = currentSettings.GetDimensions();
-                    this.Width = width;
-                    this.Height = height;
-
-                    if (currentSettings.RememberPosition)
-                    {
-                        this.Left = currentSettings.PositionX;
-                        this.Top = currentSettings.PositionY;
-                        EnsureWindowOnScreen();
-                    }
-                    else
-                    {
-                        ApplyPopupPosition();
-                    }
-
-                    RemoveWPFBorderStyling();
-                    SendSettingsToWebView();
-                    ApplyWindowProperties();
-                });
-            }
-            catch (Exception ex)
-            {
-                LogError("ApplySettingsToWindow error", ex);
-            }
-        }
-
-        private void ApplyPopupPosition()
-        {
-            var screen = SystemParameters.WorkArea;
-            switch (currentSettings.PopupPosition)
-            {
-                case "top-left":
-                    this.Left = screen.Left;
-                    this.Top = screen.Top;
-                    break;
-                case "top-right":
-                    this.Left = screen.Right - this.Width;
-                    this.Top = screen.Top;
-                    break;
-                case "bottom-left":
-                    this.Left = screen.Left;
-                    this.Top = screen.Bottom - this.Height;
-                    break;
-                case "bottom-right":
-                default:
-                    this.Left = screen.Right - this.Width;
-                    this.Top = screen.Bottom - this.Height;
-                    break;
-            }
-        }
-
-        private void RemoveWPFBorderStyling()
-        {
-            var border = this.FindName("MainBorder") as System.Windows.Controls.Border;
-            if (border == null) return;
-
-            border.Background = new SolidColorBrush(Colors.Transparent);
-            border.BorderThickness = new Thickness(0);
-            border.BorderBrush = null;
-            border.CornerRadius = new CornerRadius(0);
-            border.Effect = null;
-            border.Padding = new Thickness(0);
-            border.Margin = new Thickness(0);
-        }
-
-        private void SendSettingsToWebView()
-        {
-            try
-            {
-                var settingsMessage = new
-                {
-                    type = "applySettings",
-                    data = new
-                    {
-                        theme = currentSettings.Theme,
-                        playerAppearance = currentSettings.PlayerAppearance,
-                        tintColor = currentSettings.TintColor,
-                        magicColors = currentSettings.MagicColors,
-                        coverGlow = currentSettings.CoverGlow,
-                        opacity = currentSettings.Opacity,
-                        cornerRadius = currentSettings.CornerRadius,
-                        borderWidth = currentSettings.BorderWidth,
-                        borderColor = currentSettings.BorderColor,
-                        shadowIntensity = currentSettings.ShadowIntensity,
-                        backgroundBlur = currentSettings.BackgroundBlur,
-                        customBackgroundColor = currentSettings.CustomBackgroundColor,
-                        showAlbumArt = currentSettings.ShowAlbumArt,
-                        showArtistName = currentSettings.ShowArtistName,
-                        showAlbumName = currentSettings.ShowAlbumName,
-                        showTrackTime = currentSettings.ShowTrackTime,
-                        showProgressBar = currentSettings.ShowProgressBar,
-                        showVolumeBar = currentSettings.ShowVolumeBar,
-                        enableVisualizer = currentSettings.EnableVisualizer,
-                        fontSize = currentSettings.FontSize,
-                        textAlignment = currentSettings.TextAlignment,
-                        coverStyle = currentSettings.CoverStyle,
-                        enableAnimations = currentSettings.EnableAnimations,
-                        animationSpeed = currentSettings.AnimationSpeed,
-                        fadeInOut = currentSettings.FadeInOut,
-                        rememberPosition = currentSettings.RememberPosition,
-                        positionX = currentSettings.PositionX,
-                        positionY = currentSettings.PositionY,
-                        popupPosition = currentSettings.PopupPosition,
-                        alwaysOnTop = currentSettings.AlwaysOnTop
-                    }
-                };
-
-                var json = JsonSerializer.Serialize(settingsMessage, _jsonOptions);
-                webView?.Dispatcher.BeginInvoke(new Action(() =>
-                {
-                    try
-                    {
-                        webView?.CoreWebView2?.PostWebMessageAsString(json);
-                    }
-                    catch (Exception ex)
-                    {
-                        LogError("SendSettingsToWebView failed", ex);
-                    }
-                }));
-            }
-            catch (Exception ex)
-            {
-                LogError("SendSettingsToWebView serialization error", ex);
-            }
-        }
-
-        private void EnsureWindowOnScreen()
-        {
-            var workingArea = SystemParameters.WorkArea;
-            const double tolerance = 10;
-
-            if (this.Left < workingArea.Left - tolerance)
-                this.Left = workingArea.Left;
-            if (this.Top < workingArea.Top - tolerance)
-                this.Top = workingArea.Top;
-            if (this.Left + this.Width > workingArea.Right + tolerance)
-                this.Left = workingArea.Right - this.Width;
-            if (this.Top + this.Height > workingArea.Bottom + tolerance)
-                this.Top = workingArea.Bottom - this.Height;
-        }
-
-        private void ApplyWindowProperties()
-        {
-            this.Opacity = Math.Max(0.1, Math.Min(1.0, currentSettings.Opacity));
-            this.Topmost = currentSettings.AlwaysOnTop;
-        }
-
-        #endregion
-
-        private async Task InitMediaManagerAsync()
-        {
-            try
-            {
-                _mediaManager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-                if (_mediaManager == null) return;
-
-                _mediaManager.CurrentSessionChanged += OnCurrentSessionChanged;
-                _mediaManager.SessionsChanged += OnSessionsChanged;
-                await PushCurrentSessionAsync();
-            }
-            catch (Exception ex)
-            {
-                LogError("InitMediaManagerAsync error", ex);
-            }
-        }
-
-        private GlobalSystemMediaTransportControlsSession? FindBestSession()
-        {
-            try
-            {
-                if (_mediaManager == null) return null;
-                var sessions = _mediaManager.GetSessions();
-                if (sessions == null || sessions.Count == 0) return null;
-
-                // Prefer Spotify sessions
-                foreach (var s in sessions)
-                {
-                    try
-                    {
-                        var aumid = s.SourceAppUserModelId;
-                        if (!string.IsNullOrEmpty(aumid) &&
-                            aumid.IndexOf("spotify", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            return s;
-                        }
-                    }
-                    catch { }
-                }
-
-                // Prefer playing sessions
-                foreach (var s in sessions)
-                {
-                    try
-                    {
-                        var pi = s.GetPlaybackInfo();
-                        if (pi?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
-                        {
-                            return s;
-                        }
-                    }
-                    catch { }
-                }
-
-                // Return first available session
-                return sessions.FirstOrDefault();
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private bool IsSpotifySession(GlobalSystemMediaTransportControlsSession session,
-                               GlobalSystemMediaTransportControlsSessionMediaProperties? mediaProps)
-        {
-            if (!ACCEPT_ONLY_SPOTIFY) return true;
-
-            try
-            {
-                if (session == null) return false;
-
-                var aumid = session.SourceAppUserModelId;
-                if (!string.IsNullOrEmpty(aumid) &&
-                    aumid.IndexOf("spotify", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    return true;
-                }
-
-                if (mediaProps != null)
-                {
-                    var art = (mediaProps.Thumbnail?.ToString() ?? "").ToLower();
-                    if (art.Contains("spotify") || art.Contains("scdn"))
-                    {
-                        return true;
-                    }
-                }
-            }
-            catch { }
-
-            return false;
-        }
-
-        private async void OnCurrentSessionChanged(GlobalSystemMediaTransportControlsSessionManager sender, CurrentSessionChangedEventArgs args) =>
-            await DebouncedPushCurrentSessionAsync();
-
-        private async void OnSessionsChanged(GlobalSystemMediaTransportControlsSessionManager sender, SessionsChangedEventArgs args) =>
-            await DebouncedPushCurrentSessionAsync();
-
-        private async Task DebouncedPushCurrentSessionAsync()
-        {
-            var now = DateTime.UtcNow;
-            if ((now - _lastPushTime).TotalMilliseconds < PUSH_DEBOUNCE_MS)
-                return;
-
-            _lastPushTime = now;
-            await PushCurrentSessionAsync();
-        }
-
-        private async Task PushCurrentSessionAsync()
-        {
-            if (_isDisposing || !await _pushLock.WaitAsync(100, _cancellationTokenSource.Token))
-                return;
-
-            try
-            {
-                if (_mediaManager == null) return;
-
-                var session = _mediaManager.GetCurrentSession() ?? FindBestSession();
-                if (session == null)
-                {
-                    SendNoPlayingPayload();
-                    return;
-                }
-
-                await ProcessMediaSessionAsync(session);
-            }
-            catch (Exception ex)
-            {
-                LogError("PushCurrentSessionAsync error", ex);
-            }
-            finally
-            {
-                _pushLock.Release();
-            }
-        }
-
-        private void SendNoPlayingPayload()
-        {
-            var payload = new
-            {
-                title = "No playing",
-                artist = "",
-                album = "",
-                durationMs = 0L,
-                positionMs = 0L,
-                lastUpdatedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                isPlaying = false,
-                albumArt = "",
-                volumePercent = GetCurrentVolumePercent()
-            };
-
-            SendJsonToWeb(payload);
-        }
-
-        private async Task ProcessMediaSessionAsync(GlobalSystemMediaTransportControlsSession session)
-        {
-            if (_currentSession != session)
-            {
-                UpdateCurrentSession(session);
-            }
-
-            var (mediaProps, timeline, playbackInfo) = await GetMediaInfoAsync(session);
-
-            if (ACCEPT_ONLY_SPOTIFY && !IsSpotifySession(session, mediaProps))
-            {
-                var alt = FindBestSession();
-                if (alt != null && alt != session)
-                {
-                    await ProcessMediaSessionAsync(alt);
-                    return;
-                }
-                SendNoPlayingPayload();
-                return;
-            }
-
-            var (durationMs, positionMs) = GetTimingInfo(timeline);
-            var isPlaying = playbackInfo?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
-            var trackInfo = BuildTrackInfo(mediaProps);
-
-            await UpdateAlbumArtCacheIfNeededAsync(trackInfo.Key, mediaProps);
-
-            var payload = new
-            {
-                title = trackInfo.Title,
-                artist = trackInfo.Artist,
-                album = trackInfo.Album,
-                durationMs,
-                positionMs,
-                lastUpdatedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                isPlaying,
-                albumArt = _cachedAlbumArtDataUrl ?? "",
-                volumePercent = GetCurrentVolumePercent()
-            };
-
-            SendJsonToWeb(payload);
-        }
-
-        private void UpdateCurrentSession(GlobalSystemMediaTransportControlsSession session)
-        {
-            if (_currentSession != null)
-                UnsubscribeFromSessionEvents(_currentSession);
-
-            _currentSession = session;
-            SubscribeToSessionEvents(_currentSession);
-        }
-
-        private void SubscribeToSessionEvents(GlobalSystemMediaTransportControlsSession session)
-        {
-            session.MediaPropertiesChanged += OnMediaPropertiesChanged;
-            session.PlaybackInfoChanged += OnPlaybackInfoChanged;
-            session.TimelinePropertiesChanged += OnTimelinePropertiesChanged;
-        }
-
-        private void UnsubscribeFromSessionEvents(GlobalSystemMediaTransportControlsSession session)
-        {
-            try
-            {
-                session.MediaPropertiesChanged -= OnMediaPropertiesChanged;
-                session.PlaybackInfoChanged -= OnPlaybackInfoChanged;
-                session.TimelinePropertiesChanged -= OnTimelinePropertiesChanged;
-            }
-            catch { }
-        }
-
-        private async Task<(GlobalSystemMediaTransportControlsSessionMediaProperties?,
-                          GlobalSystemMediaTransportControlsSessionTimelineProperties?,
-                          GlobalSystemMediaTransportControlsSessionPlaybackInfo?)> GetMediaInfoAsync(
-            GlobalSystemMediaTransportControlsSession session)
-        {
-            var mediaProps = await session.TryGetMediaPropertiesAsync();
-            var timeline = session.GetTimelineProperties();
-            var playbackInfo = session.GetPlaybackInfo();
-            return (mediaProps, timeline, playbackInfo);
-        }
-
-        private static (long DurationMs, long PositionMs) GetTimingInfo(
-            GlobalSystemMediaTransportControlsSessionTimelineProperties? timeline)
-        {
-            if (timeline == null) return (0L, 0L);
-
-            try
-            {
-                var positionMs = (long)timeline.Position.TotalMilliseconds;
-                var durationMs = (long)timeline.EndTime.TotalMilliseconds;
-                return (durationMs, positionMs);
-            }
-            catch
-            {
-                return (0L, 0L);
-            }
-        }
-
-        private static (string Title, string Artist, string Album, string Key) BuildTrackInfo(
-            GlobalSystemMediaTransportControlsSessionMediaProperties? mediaProps)
-        {
-            var title = mediaProps?.Title ?? "";
-            var artist = mediaProps?.Artist ?? "";
-            var album = mediaProps?.AlbumTitle ?? "";
-            var key = $"{title}|{artist}|{album}";
-            return (title, artist, album, key);
-        }
-
-        private async Task UpdateAlbumArtCacheIfNeededAsync(string trackKey,
-            GlobalSystemMediaTransportControlsSessionMediaProperties? mediaProps)
-        {
-            if (trackKey == _lastTrackKey) return;
-
-            _lastTrackKey = trackKey;
-            _cachedAlbumArtDataUrl = await TryGetThumbnailAsDataUrlAsync(mediaProps);
-        }
-
-        private static async Task<string?> TryGetThumbnailAsDataUrlAsync(
-            GlobalSystemMediaTransportControlsSessionMediaProperties? mediaProps)
-        {
-            try
-            {
-                if (mediaProps?.Thumbnail == null) return null;
-
-                using var ras = await mediaProps.Thumbnail.OpenReadAsync();
-                using var netStream = ras.AsStreamForRead();
-                using var ms = new MemoryStream();
-                await netStream.CopyToAsync(ms);
-                var bytes = ms.ToArray();
-
-                var bitmap = new System.Windows.Media.Imaging.BitmapImage();
-                bitmap.BeginInit();
-                bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
-                bitmap.StreamSource = new MemoryStream(bytes);
-                bitmap.EndInit();
-                bitmap.Freeze();
-
-                const int MAX_DIM = 300;
-                double scale = Math.Min(1.0, (double)MAX_DIM / Math.Max(bitmap.PixelWidth, bitmap.PixelHeight));
-
-                var tb = new System.Windows.Media.Imaging.TransformedBitmap(bitmap,
-                    new System.Windows.Media.ScaleTransform(scale, scale));
-                tb.Freeze();
-
-                var encoder = new System.Windows.Media.Imaging.JpegBitmapEncoder();
-                encoder.QualityLevel = 75;
-                encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(tb));
-
-                using var outMs = new MemoryStream();
-                encoder.Save(outMs);
-                var outBytes = outMs.ToArray();
-                var base64 = Convert.ToBase64String(outBytes);
-
-                return $"data:image/jpeg;base64,{base64}";
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        public void SendJsonToWeb(object payload)
-        {
-            if (_isDisposing) return;
-
-            try
-            {
-                var json = JsonSerializer.Serialize(payload, _jsonOptions);
-                if (json == _lastSentPayloadHash) return;
-                _lastSentPayloadHash = json;
-
-                webView?.Dispatcher.BeginInvoke(new Action(() =>
-                {
-                    try
-                    {
-                        webView?.CoreWebView2?.PostWebMessageAsString(json);
-                    }
-                    catch (Exception ex)
-                    {
-                        LogError("Post to webview error", ex);
-                    }
-                }));
-            }
-            catch (Exception ex)
-            {
-                LogError("SendJsonToWeb error", ex);
-            }
-        }
-
-        // Overload mới - dùng cho JsonElement (YouTube)
-        public void SendJsonToWeb(JsonElement payload)
-        {
-            if (_isDisposing) return;
-
-            try
-            {
-                var json = payload.GetRawText();
-                if (json == _lastSentPayloadHash) return;
-                _lastSentPayloadHash = json;
-
-                webView?.Dispatcher.BeginInvoke(new Action(() =>
-                {
-                    try
-                    {
-                        webView?.CoreWebView2?.PostWebMessageAsString(json);
-                    }
-                    catch (Exception ex)
-                    {
-                        LogError("Post to webview error", ex);
-                    }
-                }));
-            }
-            catch (Exception ex)
-            {
-                LogError("SendJsonToWeb (JsonElement) error", ex);
-            }
-        }
-
-
-        // Event handlers
-        private async void OnMediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args) => await DebouncedPushCurrentSessionAsync();
-        private async void OnPlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args) => await DebouncedPushCurrentSessionAsync();
-        private async void OnTimelinePropertiesChanged(GlobalSystemMediaTransportControlsSession sender, TimelinePropertiesChangedEventArgs args) => await DebouncedPushCurrentSessionAsync();
-
-        #region Volume Management
-
-        private void StartVolumeMonitor()
-        {
-            try
-            {
-                if (!InitializeAudioEndpoint()) return;
-                // use explicit ThreadingTimer to avoid ambiguous Timer
-                _volumeTimer = new ThreadingTimer(OnVolumeTimerElapsed, null, 0, VOLUME_POLL_INTERVAL_MS);
-            }
-            catch (Exception ex)
-            {
-                LogError("StartVolumeMonitor error", ex);
-            }
-        }
-
-        private bool InitializeAudioEndpoint()
-        {
-            try
-            {
-                var devEnum = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;
-                if (devEnum == null) return false;
-
-                int hr = devEnum.GetDefaultAudioEndpoint(EDataFlow.eRender, ERole.eMultimedia, out IMMDevice device);
-                if (hr != 0 || device == null) return false;
-
-                var iid = typeof(IAudioEndpointVolume).GUID;
-                const int CLSCTX_ALL = 23;
-                device.Activate(ref iid, CLSCTX_ALL, IntPtr.Zero, out object volumeObj);
-
-                _audioEndpointVolume = volumeObj as IAudioEndpointVolume;
-                return _audioEndpointVolume != null;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private void OnVolumeTimerElapsed(object? state)
-        {
-            if (_isDisposing || _audioEndpointVolume == null) return;
-
-            try
-            {
-                int hr = _audioEndpointVolume.GetMasterVolumeLevelScalar(out float level);
-                if (hr != 0) return;
-
-                var volumePercent = (int)Math.Round(level * 100);
-                if (volumePercent != _lastSentVolumePercent)
-                {
-                    _lastSentVolumePercent = volumePercent;
-                    var payload = new { volumePercent };
-                    SendJsonToWeb(payload);
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError("Volume poll error", ex);
-            }
-        }
-
-        private int GetCurrentVolumePercent()
-        {
-            try
-            {
-                if (_audioEndpointVolume == null) return -1;
-                int hr = _audioEndpointVolume.GetMasterVolumeLevelScalar(out float level);
-                return hr == 0 ? (int)Math.Round(level * 100) : -1;
-            }
-            catch
-            {
-                return -1;
-            }
-        }
-
-        #endregion
-
-        #region Minimal Logging
-
-        private static void LogError(string message, Exception ex)
-        {
-            Debug.WriteLine($"{message}: {ex}");
-        }
-
-        private static async Task LogErrorToFileAsync(string fileName, Exception ex)
-        {
-            try
-            {
-                var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, fileName);
-                var logEntry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} -> {ex}{Environment.NewLine}";
-                await File.AppendAllTextAsync(logPath, logEntry);
-            }
-            catch { }
-        }
-
-        #endregion
-
-        #region COM Interfaces
-
-        [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
-        private class MMDeviceEnumeratorComObject { }
-
-        private enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
-        private enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }
-
-        [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IMMDeviceEnumerator
-        {
-            int NotImpl1();
-            int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice ppDevice);
-        }
-
-        [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IMMDevice
-        {
-            int Activate([In] ref Guid iid, int dwClsCtx, IntPtr pActivationParams,
-                        [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
-        }
-
-        [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IAudioEndpointVolume
-        {
-            int RegisterControlChangeNotify(IntPtr pNotify);
-            int UnregisterControlChangeNotify(IntPtr pNotify);
-            int GetChannelCount(out uint pnChannelCount);
-            int SetMasterVolumeLevel(float fLevelDB, Guid pguidEventContext);
-            int SetMasterVolumeLevelScalar(float fLevel, Guid pguidEventContext);
-            int GetMasterVolumeLevel(out float pfLevelDB);
-            int GetMasterVolumeLevelScalar(out float pfLevel);
-        }
-
-        #endregion
-    }
-
-    public class UpdateManifest
-    {
-        public string? name { get; set; }
-        public string? version { get; set; }
-        public string? notes { get; set; }
-        public string? url { get; set; }
-        public string? sha256 { get; set; }
-        public string? publishedAt { get; set; }
-    }
-
-    public class UpdateManager
-    {
-        private readonly HttpClient _http;
-        public UpdateManager()
-        {
-            _http = new HttpClient() { Timeout = TimeSpan.FromSeconds(30) };
-            _http.DefaultRequestHeaders.UserAgent.ParseAdd("NowPlayingPopup-Updater/1.0");
-        }
-
-        public async Task<UpdateManifest?> GetRemoteManifestAsync(string manifestUrl)
-        {
-            try
-            {
-                var s = await _http.GetStringAsync(manifestUrl);
-                return JsonSerializer.Deserialize<UpdateManifest>(s, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        public static Version? GetLocalVersion()
-        {
-            try
-            {
-                // 1) Try assembly version first
-                var asm = Assembly.GetEntryAssembly();
-                var asmVer = asm?.GetName().Version;
-                if (asmVer != null)
-                {
-                    Debug.WriteLine($"[Update] Assembly version: {asmVer}");
-                    return asmVer;
-                }
-
-                // 2) Fallback: use FileVersionInfo from entry assembly location
-                var path = asm?.Location;
-                if (!string.IsNullOrEmpty(path) && File.Exists(path))
-                {
-                    var v = FileVersionInfo.GetVersionInfo(path).ProductVersion;
-                    if (!string.IsNullOrEmpty(v) && Version.TryParse(NormalizeVersionString(v), out var fv))
-                    {
-                        Debug.WriteLine($"[Update] FileVersionInfo.ProductVersion: {v} -> parsed {fv}");
-                        return fv;
-                    }
-                }
-
-                // 3) Last resort: find executing process path
                 try
                 {
-                    var procPath = Process.GetCurrentProcess().MainModule?.FileName;
-                    if (!string.IsNullOrEmpty(procPath) && File.Exists(procPath))
-                    {
-                        var v = FileVersionInfo.GetVersionInfo(procPath).ProductVersion;
-                        if (!string.IsNullOrEmpty(v) && Version.TryParse(NormalizeVersionString(v), out var pv))
-                        {
-                            Debug.WriteLine($"[Update] Process MainModule version: {pv}");
-                            return pv;
-                        }
-                    }
+                    _settingsManager?.Update(newSettings);
                 }
-                catch { /* may throw on single-file, ignore */ }
+                catch (ValidationException ex)
+                {
+                    Debug.WriteLine($"Settings update validation failed: {ex.Message}");
+                }
+            });
+        }
 
-                Debug.WriteLine("[Update] Could not get local version via assembly/fileinfo.");
-                return null;
+        public void OpenSettings()
+        {
+            try
+            {
+                int port = _httpServer?.Port ?? 5005;
+                var url = $"http://localhost:{port}/settings.html";
+                Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("[Update] GetLocalVersion error: " + ex);
-                return null;
+                Debug.WriteLine($"OpenSettings error: {ex}");
+                WpfMessageBox.Show($"Failed to open settings: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
             }
-
-            static string NormalizeVersionString(string s)
-            {
-                // Convert "1.0.5" -> "1.0.5.0" to make Version.TryParse happier
-                var parts = s.Split('.');
-                if (parts.Length == 3) return s + ".0";
-                return s;
-            }
-        }
-
-        public static bool IsNewer(string remoteVersion, Version? local)
-        {
-            if (local == null) return true; // no local info -> assume newer
-            if (string.IsNullOrWhiteSpace(remoteVersion)) return false;
-
-            // Normalize and try parse remote
-            if (!Version.TryParse(NormalizeVersionString(remoteVersion), out var rv))
-            {
-                Debug.WriteLine($"[Update] Remote version parse failed: '{remoteVersion}'");
-                return false;
-            }
-
-            Debug.WriteLine($"[Update] Comparing remote {rv} to local {local}");
-            return rv > local;
-
-            static string NormalizeVersionString(string s)
-            {
-                var parts = s.Split('.');
-                if (parts.Length == 3) return s + ".0";
-                return s;
-            }
-        }
-
-        public async Task<string?> DownloadFileAsync(string url, IProgress<double>? progress = null, CancellationToken ct = default)
-        {
-            var tmp = Path.Combine(Path.GetTempPath(), Path.GetFileName(new Uri(url).LocalPath));
-            try
-            {
-                using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-                resp.EnsureSuccessStatusCode();
-                var total = resp.Content.Headers.ContentLength ?? -1L;
-                using var stream = await resp.Content.ReadAsStreamAsync(ct);
-                using var fs = File.Create(tmp);
-                var buffer = new byte[81920];
-                long read = 0;
-                int r;
-                while ((r = await stream.ReadAsync(buffer, ct)) > 0)
-                {
-                    await fs.WriteAsync(buffer.AsMemory(0, r), ct);
-                    read += r;
-                    if (total > 0 && progress != null) progress.Report((double)read / total * 100.0);
-                }
-                return tmp;
-            }
-            catch
-            {
-                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
-                return null;
-            }
-        }
-
-        public static string ComputeSha256(string filePath)
-        {
-            using var sha = SHA256.Create();
-            using var fs = File.OpenRead(filePath);
-            var hash = sha.ComputeHash(fs);
-            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
-        }
-
-        public static bool VerifySha256(string filePath, string expectedHash)
-        {
-            if (string.IsNullOrWhiteSpace(expectedHash)) return true;
-            var got = ComputeSha256(filePath);
-            return string.Equals(got, expectedHash.Trim().ToLowerInvariant(), StringComparison.OrdinalIgnoreCase);
         }
     }
-
 }
