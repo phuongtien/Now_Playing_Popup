@@ -19,7 +19,7 @@ document.querySelectorAll(".position-option").forEach((option) => {
 async function loadSettings() {
   try {
     const res = await fetch(API);
-    if (!res.ok) throw new Error("Failed to load");
+    if (!res.ok) throw new Error("Lỗi rồi cu, mày đã mở widget chưa");
     const s = await res.json();
     currentSettings = s;
 
