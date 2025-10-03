@@ -25,35 +25,52 @@ namespace NowPlayingPopup
             if (_webView == null) return;
 
             string js = @"
-                (function() {
-                    const video = document.querySelector('video');
-                    if (!video) return null;
+        (function() {
+            const video = document.querySelector('video');
+            if (!video) return { noPlaying: true };
 
-                    const title = document.title.replace(' - YouTube','');
-                    const artist = ''; // có thể parse từ mô tả nếu muốn
-                    const thumbnail = document.querySelector('link[rel=image_src]')?.href || '';
-                    const duration = video.duration * 1000 || 0;
-                    const position = video.currentTime * 1000 || 0;
-                    const isPlaying = !video.paused;
+            const title = document.title.replace(' - YouTube','');
+            const artist = '';
+            const thumbnail = document.querySelector('link[rel=image_src]')?.href || '';
+            const duration = video.duration * 1000 || 0;
+            const position = video.currentTime * 1000 || 0;
+            const isPlaying = !video.paused;
 
-                    return { title, artist, album: '', durationMs: duration, positionMs: position, isPlaying, albumArt: thumbnail };
-                })();
-            ";
+            return { 
+                title, artist, album: '', 
+                durationMs: duration, positionMs: position, 
+                isPlaying, albumArt: thumbnail 
+            };
+        })();
+    ";
 
             try
             {
                 var result = await _webView.ExecuteScriptAsync(js);
-                if (!string.IsNullOrEmpty(result) && result != "null")
-                {
-                    // JS trả về chuỗi JSON, cần clean trước khi Deserialize
-                    var json = result.Replace("\\u0022", "\"");
-                    var doc = JsonDocument.Parse(json);
-                    var payload = doc.RootElement.Clone();
+                if (string.IsNullOrEmpty(result) || result == "null") return;
 
-                    _mainWindow.Dispatcher.Invoke(() =>
+                var json = result.Replace("\\u0022", "\"");
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("noPlaying", out var noPlaying) && noPlaying.GetBoolean())
+                {
+                    _mainWindow.SendJsonToWeb(new
                     {
-                        _mainWindow.SendJsonToWeb(payload);
+                        title = "No playing",
+                        artist = "",
+                        album = "",
+                        durationMs = 0L,
+                        positionMs = 0L,
+                        lastUpdatedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        isPlaying = false,
+                        albumArt = "",
+                        volumePercent = -1
                     });
+                }
+                else
+                {
+                    _mainWindow.SendJsonToWeb(root);
                 }
             }
             catch (Exception ex)

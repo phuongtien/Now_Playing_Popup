@@ -439,18 +439,17 @@ exit /b 0
             await InitMediaManagerAsync();
             _youTubeHandler = new YouTubeMediaHandler(webView.CoreWebView2, this);
             _ = Task.Run(async () =>
-            {
-                while (!_isDisposing)
-                {
-                    await Task.Delay(2000);
-
-                    // Nếu không có session Spotify/ứng dụng khác thì fallback sang YouTube
-                    if (_mediaManager == null || _mediaManager.GetCurrentSession() == null)
-                    {
-                        await _youTubeHandler.PollYouTubeAsync();
-                    }
-                }
-            });
+ {
+     while (!_isDisposing)
+     {
+         await Task.Delay(1000);
+         // chỉ poll YouTube khi không có session playing
+         if (_mediaManager == null || _mediaManager.GetCurrentSession() == null)
+         {
+             await _youTubeHandler.PollYouTubeAsync();
+         }
+     }
+ });
         }
 
         private void SetupTrayIcon()
@@ -1159,16 +1158,22 @@ exit /b 0
 
             try
             {
-                if (_mediaManager == null) return;
-
-                var session = _mediaManager.GetCurrentSession() ?? FindBestSession();
-                if (session == null)
+                if (_mediaManager != null)
                 {
-                    SendNoPlayingPayload();
-                    return;
+                    var session = _mediaManager.GetCurrentSession() ?? FindBestSession();
+                    if (session != null)
+                    {
+                        var playbackInfo = session.GetPlaybackInfo();
+                        if (playbackInfo?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                        {
+                            await ProcessMediaSessionAsync(session);
+                            return;
+                        }
+                    }
                 }
 
-                await ProcessMediaSessionAsync(session);
+                // nếu không có session nào đang playing -> thử YouTube
+                await _youTubeHandler.PollYouTubeAsync();
             }
             catch (Exception ex)
             {
@@ -1179,6 +1184,7 @@ exit /b 0
                 _pushLock.Release();
             }
         }
+
 
         private void SendNoPlayingPayload()
         {
